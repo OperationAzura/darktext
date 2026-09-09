@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "darktext"
+version = "2.0.0"
+description = "OCR and speech accessibility companion for Darklands"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "onnxruntime>=1.20",
+    "opencv-python-headless>=4.10",
+    "rapidocr>=3.9",
+]
+
+[project.scripts]
+darktext = "darktext.cli:main"
+
+[tool.setuptools]
+packages = ["darktext"]

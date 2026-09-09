@@ -1,0 +1,217 @@
+"""OCR processing and text extraction for Darklands game dialogs."""
+
+from difflib import SequenceMatcher
+import re
+import cv2
+import numpy as np
+from rapidocr import LangDet, LangRec, ModelType, OCRVersion, RapidOCR
+
+from .config import CONTENT_SIMILARITY, DEBUG_DIR, OCR_SCALE, TEXT_RECT
+from .models import Line, ScreenState
+
+
+def build_engine() -> RapidOCR:
+    """Instantiate and configure RapidOCR for English small model."""
+    return RapidOCR(
+        params={
+            "Global.use_cls": False,
+            "Global.text_score": 0.35,
+            "Global.log_level": "warning",
+            "Det.lang_type": LangDet.EN,
+            "Det.model_type": ModelType.SMALL,
+            "Det.ocr_version": OCRVersion.PPOCRV6,
+            "Rec.lang_type": LangRec.EN,
+            "Rec.model_type": ModelType.SMALL,
+            "Rec.ocr_version": OCRVersion.PPOCRV6,
+        }
+    )
+
+
+def clean_text(text: str) -> str:
+    """Normalize common OCR artifacts in Darklands gothic serif font."""
+    text = text.replace("…", "...")
+    text = text.replace("|", "I")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def box_bounds(box) -> tuple[float, float, float, float]:
+    xs = [float(p[0]) for p in box]
+    ys = [float(p[1]) for p in box]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def line_is_blue(story_bgr: np.ndarray, line: Line) -> bool:
+    """Detect whether a line is highlighted in blue (the player's current selection)."""
+    x1 = max(0, int(line.x1) - 2)
+    y1 = max(0, int(line.y1) - 2)
+    x2 = min(story_bgr.shape[1], int(line.x2) + 2)
+    y2 = min(story_bgr.shape[0], int(line.y2) + 2)
+    reg = story_bgr[y1:y2, x1:x2]
+    if reg.size == 0:
+        return False
+    b = reg[:, :, 0].astype(np.int16)
+    g = reg[:, :, 1].astype(np.int16)
+    r = reg[:, :, 2].astype(np.int16)
+    blue = (b >= 105) & (b >= r * 1.55) & (b >= g * 1.35) & ((b - r) >= 45)
+    bright = (r >= 165) & (g >= 165) & (b >= 165)
+    blue_n = int(blue.sum())
+    bright_n = int(bright.sum())
+    return blue_n >= 8 and blue_n >= max(8, int(0.12 * (blue_n + bright_n + 1)))
+
+
+def visual_dot_triplet(story_bgr: np.ndarray, y1: float, y2: float) -> bool:
+    """Detect the three tiny leading dots used by Darklands menu choices."""
+    ya = max(0, int(y1) - 3)
+    yb = min(story_bgr.shape[0], int(y2) + 3)
+    strip = story_bgr[ya:yb, 0:38]
+    if strip.size == 0:
+        return False
+    b, g, r = cv2.split(strip)
+    white = (r > 165) & (g > 165) & (b > 165)
+    blue = (
+        (b > 90)
+        & (b.astype(np.int16) > r.astype(np.int16) * 1.35)
+        & (b.astype(np.int16) > g.astype(np.int16) * 1.20)
+    )
+    mask = ((white | blue).astype(np.uint8) * 255)
+    n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
+    dots = []
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if 1 <= area <= 30 and 1 <= w <= 8 and 1 <= h <= 8:
+            dots.append((float(cents[i][0]), float(cents[i][1]), w, h, area))
+    dots.sort()
+    for i in range(len(dots) - 2):
+        a, c, d = dots[i : i + 3]
+        if abs(a[1] - c[1]) <= 3.5 and abs(c[1] - d[1]) <= 3.5:
+            if 2 <= c[0] - a[0] <= 14 and 2 <= d[0] - c[0] <= 14:
+                return True
+    return False
+
+
+def extract_state(engine: RapidOCR, logical_game: np.ndarray, save_debug: bool = False) -> ScreenState:
+    """OCR the narrative and option choices from the logical game screen."""
+    x1, y1, x2, y2 = TEXT_RECT
+    story = logical_game[y1:y2, x1:x2].copy()
+    enlarged = cv2.resize(
+        story, None, fx=OCR_SCALE, fy=OCR_SCALE, interpolation=cv2.INTER_NEAREST
+    )
+    result = engine(enlarged, use_cls=False)
+    lines: list[Line] = []
+
+    if getattr(result, "boxes", None) is not None and getattr(result, "txts", None) is not None:
+        for box, txt, score in zip(result.boxes, result.txts, result.scores):
+            tx = clean_text(str(txt))
+            if not tx:
+                continue
+            bx1, by1, bx2, by2 = box_bounds(box)
+            bx1 /= OCR_SCALE
+            by1 /= OCR_SCALE
+            bx2 /= OCR_SCALE
+            by2 /= OCR_SCALE
+            # Ignore the ornamental portrait in the top-left corner.
+            if bx2 < 68 and by1 < 55:
+                continue
+            # Ignore implausible tiny background noise detections.
+            if (by2 - by1) < 5 or float(score) < 0.32:
+                continue
+            line = Line(tx, bx1, by1, bx2, by2, float(score), False)
+            line.blue = line_is_blue(story, line)
+            regex_marker = bool(re.match(r"^\s*(?:\.{1,4}|…|[·•\-])", tx))
+            has_visual_dots = visual_dot_triplet(story, by1, by2)
+            line.option_start = regex_marker or has_visual_dots
+            lines.append(line)
+
+    lines.sort(key=lambda l: (round(l.y1 / 3.0), l.x1))
+
+    narrative_lines: list[str] = []
+    options: list[list[str]] = []
+    option_line_groups: list[list[Line]] = []
+    current: list[str] | None = None
+    current_group: list[Line] | None = None
+
+    for line in lines:
+        text = line.text
+        is_new_option = False
+        if line.option_start:
+            is_new_option = True
+        elif options:
+            # Once options have begun:
+            # 1. If previous option ended with punctuation (., !, ?, :), this line starts a new option
+            prev_ended = bool(current and current[-1].endswith((".", "!", "?", ":")))
+            # 2. Options in Darklands wrap at most to 2 lines
+            too_many_lines = bool(current_group and len(current_group) >= 2)
+            # 3. If vertical gap exceeds normal line spacing, it's a separate option
+            vertical_gap = bool(current_group and (line.y1 - current_group[-1].y1) > 22.0)
+            if prev_ended or too_many_lines or vertical_gap:
+                is_new_option = True
+                line.option_start = True  # Ensure downstream TemporalOptionBuilder discovers slot!
+
+        if is_new_option:
+            text = re.sub(r"^\s*(?:\.{1,}|…|[·•\-]{1,})\s*", "", text).strip()
+            current = [text] if text else []
+            current_group = [line]
+            options.append(current)
+            option_line_groups.append(current_group)
+        elif options and current is not None and current_group is not None:
+            # Menu option wrapped continuation line
+            current.append(text)
+            current_group.append(line)
+        else:
+            narrative_lines.append(text)
+
+    # Post-process options: filter out any that look like long narrative paragraphs (> 20 words)
+    valid_options: list[str] = []
+    valid_groups: list[list[Line]] = []
+    for parts, group in zip(options, option_line_groups):
+        opt_str = re.sub(r"\s+", " ", " ".join(parts)).strip()
+        if opt_str and len(opt_str.split()) <= 20 and len(opt_str) <= 130:
+            valid_options.append(opt_str)
+            valid_groups.append(group)
+        elif opt_str:
+            # Reclassify any long paragraph as narrative
+            narrative_lines.append(opt_str)
+
+    option_texts = valid_options
+    narrative = re.sub(r"\s+", " ", " ".join(narrative_lines)).strip()
+    selected: int | None = None
+    for idx, group in enumerate(valid_groups, 1):
+        if any(l.blue for l in group):
+            selected = idx
+            break
+
+    if save_debug:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(DEBUG_DIR / "game-logical.png"), logical_game)
+        cv2.imwrite(str(DEBUG_DIR / "story.png"), story)
+        vis = story.copy()
+        for l in lines:
+            color = (255, 0, 0) if l.blue else ((0, 255, 255) if l.option_start else (0, 255, 0))
+            cv2.rectangle(vis, (int(l.x1), int(l.y1)), (int(l.x2), int(l.y2)), color, 1)
+        cv2.imwrite(str(DEBUG_DIR / "story-boxes.png"), vis)
+
+    return ScreenState(narrative, option_texts, selected, lines)
+
+
+def equivalent(a: ScreenState, b: ScreenState) -> bool:
+    """Check if two ScreenState snapshots represent the same menu/dialog."""
+    if len(a.options) != len(b.options):
+        return False
+    aa = re.sub(r"\W+", " ", a.content_text().lower()).strip()
+    bb = re.sub(r"\W+", " ", b.content_text().lower()).strip()
+    if not aa and not bb:
+        return True
+    return SequenceMatcher(None, aa, bb).ratio() >= CONTENT_SIMILARITY
+
+
+def print_state(state: ScreenState) -> None:
+    """Display extracted screen state in user-friendly format."""
+    print("Narrative:")
+    print(state.narrative or "(none)")
+    print("Options:")
+    if not state.options:
+        print("(none)")
+    for i, text in enumerate(state.options, 1):
+        flag = "  <-- SELECTED" if state.selected == i else ""
+        print(f"- {text}{flag}")
