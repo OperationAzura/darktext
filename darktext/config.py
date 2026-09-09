@@ -20,8 +20,7 @@ AUDIO_CACHE_DIR = TTS_CACHE_DIR / "menu-options"
 DIRECT_PIPER_BIN = Path(
     os.environ.get(
         "DARKTEXT_PIPER_BIN",
-        shutil.which("piper")
-        or Path.home() / "projects/readSelectedText/.venv/bin/piper",
+        shutil.which("piper") or "piper",
     )
 ).expanduser()
 DIRECT_VOICE_DIR = Path(

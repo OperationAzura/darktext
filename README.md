@@ -1,5 +1,8 @@
 # DarkText
 
+> Part of [OperationAzura's Darklands Accessibility project](https://github.com/OperationAzura/darklands-accessibility).
+> Requires the [DOSBox Staging accessibility fork](https://github.com/OperationAzura/dosbox-staging-accessibility).
+
 DarkText is a screen-reader companion for the DOS game **Darklands**. It reads
 the game's story pane and highlighted menu choices using OCR, then speaks them
 with local Piper voices. It captures the native emulated framebuffer from the
@@ -72,5 +75,4 @@ memory and input controls.
 
 ## License
 
-No license has been selected yet. Add one before publishing if you want others
-to have permission to use, modify, or redistribute the code.
+[MIT](LICENSE). DarkText's runtime dependencies retain their own licenses.
