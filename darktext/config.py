@@ -35,6 +35,10 @@ OCR_SCALE = 3
 POLL_SECONDS = 0.35
 CONTENT_SIMILARITY = 0.93
 
+# Deprecated compatibility constant for older third-party tests/imports only.
+# Runtime capture, OCR, signatures, and hover tracking do not consult it.
+TEXT_RECT = (0, 0, 640, 480)
+
 # Fast hover detection loop settings
 FAST_HOVER_POLL = 0.010       # 10ms poll interval
 FAST_HOVER_DWELL = 0.0
