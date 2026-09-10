@@ -9,9 +9,16 @@ with local Piper voices. It captures the native emulated framebuffer from the
 companion DOSBox Staging fork, so it does not depend on window focus or desktop
 screen capture.
 
+On the `native-resolution` branch, DarkText keeps that framebuffer at its real
+DOSBox resolution throughout capture and UI analysis. It no longer stretches a
+640x400 or 320x200 frame to 640x480 before OCR. Story-pane coordinates, option
+regions, highlight detection, frame-difference input, and debug images all use
+native framebuffer pixels. Only the cropped story pane is enlarged for OCR.
+
 ## Features
 
 - OCR of Darklands narrative text and menu choices
+- Native-resolution DOSBox framebuffer processing
 - Fast highlighted-option tracking
 - Multi-frame reconstruction for text obscured by the game cursor
 - Low-latency Piper speech with a persistent, content-addressed audio cache
@@ -57,6 +64,8 @@ darktext daemon
 
 The daemon announces new dialog and follows the currently highlighted option.
 Generated cache files and diagnostics are stored beneath `DARKTEXT_DATA_DIR`.
+On the native-resolution branch, one-shot debug captures are written as
+`game-native.png`, `story-native.png`, and `story-boxes-native.png`.
 
 ## Test
 
