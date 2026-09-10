@@ -85,9 +85,8 @@ class TestFastDetector(unittest.TestCase):
         self.assertGreater(score, 0.5)
         self.assertGreater(count, 10)
 
-        # Region coordinates inside story rect (135, 45, 625, 455)
-        # Region in story coords: (15, 15, 165, 35) corresponds to game (150, 60, 300, 80)
-        regions = [(15, 15, 165, 35), (15, 45, 165, 65)]
+        # Fast hover regions use absolute native framebuffer coordinates.
+        regions = [(150, 60, 300, 80), (150, 90, 300, 110)]
         selected = fast_selected_index(img, regions)
         self.assertEqual(selected, 0)
 
