@@ -30,9 +30,7 @@ DIRECT_VOICE_DIR = Path(
 ).expanduser()
 SAMPLE_RATE = 22050
 
-# Native Darklands 640x480 logical coordinates.
-# Story/dialog box excluding character stats, time, and sidebar.
-TEXT_RECT = (135, 45, 625, 455)  # x1, y1, x2, y2
+# OCR enlargement applies only to the automatically discovered text region.
 OCR_SCALE = 3
 POLL_SECONDS = 0.35
 CONTENT_SIMILARITY = 0.93
