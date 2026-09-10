@@ -3,18 +3,15 @@
 from dataclasses import dataclass
 
 
-# These fractions preserve the story-pane calibration that was originally
-# measured against DarkText's old 640x480 stretched working image. They are
-# converted once at the capture boundary into the actual framebuffer's pixel
-# coordinates; all downstream coordinates stay native.
+# Reference dimensions are used only to scale size/tolerance constants. They do
+# not define where text is expected to appear on the screen.
 _REFERENCE_WIDTH = 640.0
 _REFERENCE_HEIGHT = 480.0
-_REFERENCE_TEXT_RECT = (135.0, 45.0, 625.0, 455.0)
 
 
 @dataclass(frozen=True)
 class FrameGeometry:
-    """Native framebuffer dimensions plus calibrated scaling helpers."""
+    """Native framebuffer dimensions plus resolution-aware scaling helpers."""
 
     width: int
     height: int
@@ -33,12 +30,12 @@ class FrameGeometry:
 
     @property
     def scale_x(self) -> float:
-        """Scale old calibrated horizontal distances into native pixels."""
+        """Scale horizontal size/tolerance values into native pixels."""
         return self.width / _REFERENCE_WIDTH
 
     @property
     def scale_y(self) -> float:
-        """Scale old calibrated vertical distances into native pixels."""
+        """Scale vertical size/tolerance values into native pixels."""
         return self.height / _REFERENCE_HEIGHT
 
     def x(self, reference_pixels: float) -> float:
@@ -56,13 +53,3 @@ class FrameGeometry:
     def area_px(self, reference_pixels: float, minimum: int = 1) -> int:
         scaled = float(reference_pixels) * self.scale_x * self.scale_y
         return max(minimum, int(round(scaled)))
-
-    @property
-    def text_rect(self) -> tuple[int, int, int, int]:
-        """Story/dialog crop in this framebuffer's native pixel coordinates."""
-        rx1, ry1, rx2, ry2 = _REFERENCE_TEXT_RECT
-        x1 = min(self.width - 1, max(0, self.x_px(rx1)))
-        y1 = min(self.height - 1, max(0, self.y_px(ry1)))
-        x2 = min(self.width, max(x1 + 1, self.x_px(rx2)))
-        y2 = min(self.height, max(y1 + 1, self.y_px(ry2)))
-        return x1, y1, x2, y2
