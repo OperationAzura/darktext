@@ -6,14 +6,14 @@ import time
 import cv2
 import numpy as np
 
-from .config import TEXT_RECT
+from .geometry import FrameGeometry
 from .ocr import extract_state
-from .models import ScreenState
 
 
 def fast_signature(game: np.ndarray) -> np.ndarray:
-    """Downsample story pane to 96x52 grayscale with blue text masked to neutral."""
-    x1, y1, x2, y2 = TEXT_RECT
+    """Downsample native story pane to 96x52 grayscale with blue text neutralized."""
+    geom = FrameGeometry.from_frame(game)
+    x1, y1, x2, y2 = geom.text_rect
     story = game[y1:y2, x1:x2].copy()
     if story.size == 0:
         return np.zeros((52, 96), dtype=np.uint8)
@@ -27,7 +27,7 @@ def fast_signature(game: np.ndarray) -> np.ndarray:
 
 
 def fast_change_ratio(a: np.ndarray | None, b: np.ndarray | None) -> float:
-    """Return proportion of pixels that changed significantly between signatures."""
+    """Return proportion of signature pixels that changed significantly."""
     if a is None or b is None or a.shape != b.shape:
         return 1.0
     return float(np.mean(cv2.absdiff(a, b) >= 26))
@@ -50,22 +50,25 @@ def fast_blue_score(reg: np.ndarray) -> tuple[float, int]:
 def fast_selected_index(
     game: np.ndarray, regions: list[tuple[int, int, int, int]]
 ) -> int | None:
-    """Find which option region currently has blue highlight."""
+    """Find the highlighted option using native story-pane coordinates."""
     if not regions:
         return None
-    x1, y1, x2, y2 = TEXT_RECT
+    geom = FrameGeometry.from_frame(game)
+    x1, y1, x2, y2 = geom.text_rect
     story = game[y1:y2, x1:x2]
     h, w = story.shape[:2]
     winner = None
     winner_score = 0.0
     winner_blue = 0
+    min_blue = geom.area_px(6, minimum=2)
+    strong_blue = geom.area_px(14, minimum=4)
     for i, (a, b, c, d) in enumerate(regions):
         a, c = max(0, min(w, a)), max(0, min(w, c))
         b, d = max(0, min(h, b)), max(0, min(h, d))
         if c <= a or d <= b:
             continue
         score, blue_n = fast_blue_score(story[b:d, a:c])
-        if blue_n >= 6 and (score >= 0.04 or blue_n >= 14):
+        if blue_n >= min_blue and (score >= 0.04 or blue_n >= strong_blue):
             if score > winner_score or (abs(score - winner_score) < 0.015 and blue_n > winner_blue):
                 winner, winner_score, winner_blue = i, score, blue_n
     return winner
