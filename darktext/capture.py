@@ -5,7 +5,6 @@ import re
 import shutil
 import subprocess
 import urllib.request
-import cv2
 import numpy as np
 
 
@@ -14,7 +13,7 @@ def shutil_which(name: str) -> str | None:
 
 
 def capture_logical_game() -> np.ndarray:
-    """DARKTEXT_FRAMEBUFFER_API: capture directly from DOSBox, never desktop X11."""
+    """Capture the DOSBox framebuffer at its native emulated resolution."""
     api = os.environ.get("DOSBOX_API_URL", "http://127.0.0.1:8086").rstrip("/")
     req = urllib.request.Request(
         api + "/api/v1/video/frame",
@@ -38,10 +37,10 @@ def capture_logical_game() -> np.ndarray:
         )
 
     rgb = np.frombuffer(body, dtype=np.uint8).reshape((height, width, 3))
-    bgr = rgb[:, :, ::-1].copy()
-
-    # Aspect-correct VGA 320x200 / 640x400 to 640x480 logical coordinates.
-    return cv2.resize(bgr, (640, 480), interpolation=cv2.INTER_NEAREST)
+    # Keep the framebuffer exactly as DOSBox rendered it. DarkText now performs
+    # all UI geometry in these native pixels; OCR enlargement happens only on
+    # the cropped story pane.
+    return rgb[:, :, ::-1].copy()
 
 
 def find_darklands_window() -> tuple[str, int, int, int, int]:
