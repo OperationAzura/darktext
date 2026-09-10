@@ -11,18 +11,16 @@ from .ocr import extract_state
 
 
 def fast_signature(game: np.ndarray) -> np.ndarray:
-    """Downsample native story pane to 96x52 grayscale with blue text neutralized."""
-    geom = FrameGeometry.from_frame(game)
-    x1, y1, x2, y2 = geom.text_rect
-    story = game[y1:y2, x1:x2].copy()
-    if story.size == 0:
+    """Downsample the full native framebuffer for stable scene comparison."""
+    if game.size == 0:
         return np.zeros((52, 96), dtype=np.uint8)
-    b = story[:, :, 0].astype(np.int16)
-    g = story[:, :, 1].astype(np.int16)
-    r = story[:, :, 2].astype(np.int16)
+    frame = game.copy()
+    b = frame[:, :, 0].astype(np.int16)
+    g = frame[:, :, 1].astype(np.int16)
+    r = frame[:, :, 2].astype(np.int16)
     blue = (b >= 90) & (b >= r * 1.40) & (b >= g * 1.22) & ((b - r) >= 32)
-    story[blue] = (225, 225, 225)
-    gray = cv2.cvtColor(story, cv2.COLOR_BGR2GRAY)
+    frame[blue] = (225, 225, 225)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     return cv2.resize(gray, (96, 52), interpolation=cv2.INTER_AREA)
 
 
@@ -50,26 +48,27 @@ def fast_blue_score(reg: np.ndarray) -> tuple[float, int]:
 def fast_selected_index(
     game: np.ndarray, regions: list[tuple[int, int, int, int]]
 ) -> int | None:
-    """Find the highlighted option using native story-pane coordinates."""
+    """Find the highlighted option using absolute native framebuffer regions."""
     if not regions:
         return None
     geom = FrameGeometry.from_frame(game)
-    x1, y1, x2, y2 = geom.text_rect
-    story = game[y1:y2, x1:x2]
-    h, w = story.shape[:2]
+    h, w = game.shape[:2]
     winner = None
     winner_score = 0.0
     winner_blue = 0
     min_blue = geom.area_px(6, minimum=2)
     strong_blue = geom.area_px(14, minimum=4)
+
     for i, (a, b, c, d) in enumerate(regions):
         a, c = max(0, min(w, a)), max(0, min(w, c))
         b, d = max(0, min(h, b)), max(0, min(h, d))
         if c <= a or d <= b:
             continue
-        score, blue_n = fast_blue_score(story[b:d, a:c])
+        score, blue_n = fast_blue_score(game[b:d, a:c])
         if blue_n >= min_blue and (score >= 0.04 or blue_n >= strong_blue):
-            if score > winner_score or (abs(score - winner_score) < 0.015 and blue_n > winner_blue):
+            if score > winner_score or (
+                abs(score - winner_score) < 0.015 and blue_n > winner_blue
+            ):
                 winner, winner_score, winner_blue = i, score, blue_n
     return winner
 
