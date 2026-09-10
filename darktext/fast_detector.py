@@ -8,6 +8,7 @@ import numpy as np
 
 from .geometry import FrameGeometry
 from .ocr import extract_state
+from .text_region import detect_text_region
 
 
 def fast_signature(game: np.ndarray) -> np.ndarray:
@@ -45,13 +46,11 @@ def fast_blue_score(reg: np.ndarray) -> tuple[float, int]:
     return (bn / max(1.0, float(bn + wn))), bn
 
 
-def fast_selected_index(
-    game: np.ndarray, regions: list[tuple[int, int, int, int]]
+def _selected_from_absolute_regions(
+    game: np.ndarray,
+    regions: list[tuple[int, int, int, int]],
+    geom: FrameGeometry,
 ) -> int | None:
-    """Find the highlighted option using absolute native framebuffer regions."""
-    if not regions:
-        return None
-    geom = FrameGeometry.from_frame(game)
     h, w = game.shape[:2]
     winner = None
     winner_score = 0.0
@@ -71,6 +70,30 @@ def fast_selected_index(
             ):
                 winner, winner_score, winner_blue = i, score, blue_n
     return winner
+
+
+def fast_selected_index(
+    game: np.ndarray, regions: list[tuple[int, int, int, int]]
+) -> int | None:
+    """Find the highlighted option using native framebuffer regions.
+
+    Current DarkText supplies absolute native coordinates. As a compatibility
+    path for older callers that still provide crop-local regions, a miss is
+    retried relative to the automatically detected text region. No fixed
+    screen coordinates are used in either path.
+    """
+    if not regions:
+        return None
+    geom = FrameGeometry.from_frame(game)
+    selected = _selected_from_absolute_regions(game, regions, geom)
+    if selected is not None:
+        return selected
+
+    x1, y1, _, _ = detect_text_region(game)
+    shifted = [(a + x1, b + y1, c + x1, d + y1) for a, b, c, d in regions]
+    if shifted == regions:
+        return None
+    return _selected_from_absolute_regions(game, shifted, geom)
 
 
 class FastOcrWorker:
