@@ -9,6 +9,7 @@ from rapidocr import LangDet, LangRec, ModelType, OCRVersion, RapidOCR
 from .config import CONTENT_SIMILARITY, DEBUG_DIR, OCR_SCALE
 from .geometry import FrameGeometry
 from .models import Line, ScreenState
+from .text_region import detect_text_region
 
 
 def build_engine() -> RapidOCR:
@@ -42,15 +43,28 @@ def box_bounds(box) -> tuple[float, float, float, float]:
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def line_is_blue(story_bgr: np.ndarray, line: Line, geom: FrameGeometry) -> bool:
-    """Detect whether a line is highlighted in blue."""
+def _crop_local(line: Line, origin_x: int, origin_y: int) -> Line:
+    return Line(
+        line.text,
+        line.x1 - origin_x,
+        line.y1 - origin_y,
+        line.x2 - origin_x,
+        line.y2 - origin_y,
+        line.score,
+        line.blue,
+        line.option_start,
+    )
+
+
+def line_is_blue(crop_bgr: np.ndarray, line: Line, geom: FrameGeometry) -> bool:
+    """Detect whether a crop-local OCR line is highlighted in blue."""
     x_pad = geom.x_px(2, minimum=1)
     y_pad = geom.y_px(2, minimum=1)
     x1 = max(0, int(line.x1) - x_pad)
     y1 = max(0, int(line.y1) - y_pad)
-    x2 = min(story_bgr.shape[1], int(line.x2) + x_pad)
-    y2 = min(story_bgr.shape[0], int(line.y2) + y_pad)
-    reg = story_bgr[y1:y2, x1:x2]
+    x2 = min(crop_bgr.shape[1], int(line.x2) + x_pad)
+    y2 = min(crop_bgr.shape[0], int(line.y2) + y_pad)
+    reg = crop_bgr[y1:y2, x1:x2]
     if reg.size == 0:
         return False
     b = reg[:, :, 0].astype(np.int16)
@@ -61,18 +75,22 @@ def line_is_blue(story_bgr: np.ndarray, line: Line, geom: FrameGeometry) -> bool
     blue_n = int(blue.sum())
     bright_n = int(bright.sum())
     min_blue = geom.area_px(8, minimum=2)
-    return blue_n >= min_blue and blue_n >= max(min_blue, int(0.12 * (blue_n + bright_n + 1)))
+    return blue_n >= min_blue and blue_n >= max(
+        min_blue, int(0.12 * (blue_n + bright_n + 1))
+    )
 
 
 def visual_dot_triplet(
-    story_bgr: np.ndarray, y1: float, y2: float, geom: FrameGeometry
+    crop_bgr: np.ndarray, line_x1: float, y1: float, y2: float, geom: FrameGeometry
 ) -> bool:
-    """Detect the three tiny leading dots used by Darklands menu choices."""
+    """Detect the three tiny leading dots immediately left of an OCR text line."""
     y_pad = geom.y_px(3, minimum=1)
     ya = max(0, int(y1) - y_pad)
-    yb = min(story_bgr.shape[0], int(y2) + y_pad)
-    strip_w = min(story_bgr.shape[1], geom.x_px(38, minimum=12))
-    strip = story_bgr[ya:yb, 0:strip_w]
+    yb = min(crop_bgr.shape[0], int(y2) + y_pad)
+    left_pad = geom.x_px(42, minimum=12)
+    xa = max(0, int(line_x1) - left_pad)
+    xb = min(crop_bgr.shape[1], int(line_x1) + geom.x_px(8, minimum=3))
+    strip = crop_bgr[ya:yb, xa:xb]
     if strip.size == 0:
         return False
     b, g, r = cv2.split(strip)
@@ -83,13 +101,13 @@ def visual_dot_triplet(
         & (b.astype(np.int16) > g.astype(np.int16) * 1.20)
     )
     mask = ((white | blue).astype(np.uint8) * 255)
-    n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
+    n, _, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
     dots = []
     max_area = geom.area_px(30, minimum=4)
     max_w = geom.x_px(8, minimum=2)
     max_h = geom.y_px(8, minimum=2)
     for i in range(1, n):
-        x, y, w, h, area = stats[i]
+        _x, _y, w, h, area = stats[i]
         if 1 <= area <= max_area and 1 <= w <= max_w and 1 <= h <= max_h:
             dots.append((float(cents[i][0]), float(cents[i][1]), w, h, area))
     dots.sort()
@@ -104,15 +122,18 @@ def visual_dot_triplet(
     return False
 
 
-def extract_state(engine: RapidOCR, native_game: np.ndarray, save_debug: bool = False) -> ScreenState:
-    """OCR narrative/options directly from the native DOSBox framebuffer."""
+def extract_state(
+    engine: RapidOCR, native_game: np.ndarray, save_debug: bool = False
+) -> ScreenState:
+    """Discover and OCR the active text block in native framebuffer pixels."""
     geom = FrameGeometry.from_frame(native_game)
-    x1, y1, x2, y2 = geom.text_rect
-    story = native_game[y1:y2, x1:x2].copy()
+    region = detect_text_region(native_game)
+    x1, y1, x2, y2 = region
+    crop = native_game[y1:y2, x1:x2].copy()
 
-    # Enlargement is now OCR-only. The full framebuffer is never stretched.
+    # Only the dynamically discovered text crop is enlarged for recognition.
     enlarged = cv2.resize(
-        story, None, fx=OCR_SCALE, fy=OCR_SCALE, interpolation=cv2.INTER_NEAREST
+        crop, None, fx=OCR_SCALE, fy=OCR_SCALE, interpolation=cv2.INTER_NEAREST
     )
     result = engine(enlarged, use_cls=False)
     lines: list[Line] = []
@@ -128,15 +149,26 @@ def extract_state(engine: RapidOCR, native_game: np.ndarray, save_debug: bool = 
             bx2 /= OCR_SCALE
             by2 /= OCR_SCALE
 
-            if bx2 < geom.x(68) and by1 < geom.y(55):
-                continue
             if (by2 - by1) < max(2.0, geom.y(5)) or float(score) < 0.32:
                 continue
 
-            line = Line(tx, bx1, by1, bx2, by2, float(score), False)
-            line.blue = line_is_blue(story, line, geom)
+            # ScreenState coordinates are always absolute native framebuffer
+            # coordinates even though OCR operated on a moving crop.
+            line = Line(
+                tx,
+                bx1 + x1,
+                by1 + y1,
+                bx2 + x1,
+                by2 + y1,
+                float(score),
+                False,
+            )
+            local = _crop_local(line, x1, y1)
+            line.blue = line_is_blue(crop, local, geom)
             regex_marker = bool(re.match(r"^\s*(?:\.{1,4}|…|[·•\-])", tx))
-            has_visual_dots = visual_dot_triplet(story, by1, by2, geom)
+            has_visual_dots = visual_dot_triplet(
+                crop, local.x1, local.y1, local.y2, geom
+            )
             line.option_start = regex_marker or has_visual_dots
             lines.append(line)
 
@@ -196,12 +228,21 @@ def extract_state(engine: RapidOCR, native_game: np.ndarray, save_debug: bool = 
     if save_debug:
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(DEBUG_DIR / "game-native.png"), native_game)
-        cv2.imwrite(str(DEBUG_DIR / "story-native.png"), story)
-        vis = story.copy()
+        cv2.imwrite(str(DEBUG_DIR / "text-region-native.png"), crop)
+        vis = native_game.copy()
+        cv2.rectangle(vis, (x1, y1), (x2 - 1, y2 - 1), (255, 255, 255), 1)
         for l in lines:
-            color = (255, 0, 0) if l.blue else ((0, 255, 255) if l.option_start else (0, 255, 0))
-            cv2.rectangle(vis, (int(l.x1), int(l.y1)), (int(l.x2), int(l.y2)), color, 1)
-        cv2.imwrite(str(DEBUG_DIR / "story-boxes-native.png"), vis)
+            color = (255, 0, 0) if l.blue else (
+                (0, 255, 255) if l.option_start else (0, 255, 0)
+            )
+            cv2.rectangle(
+                vis,
+                (int(l.x1), int(l.y1)),
+                (int(l.x2), int(l.y2)),
+                color,
+                1,
+            )
+        cv2.imwrite(str(DEBUG_DIR / "text-region-boxes-native.png"), vis)
 
     return ScreenState(
         narrative,
@@ -210,6 +251,7 @@ def extract_state(engine: RapidOCR, native_game: np.ndarray, save_debug: bool = 
         lines,
         frame_width=geom.width,
         frame_height=geom.height,
+        text_region=region,
     )
 
 
