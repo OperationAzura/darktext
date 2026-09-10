@@ -21,6 +21,8 @@ class ScreenState:
     options: list[str]
     selected: int | None
     raw_lines: list[Line]
+    frame_width: int = 640
+    frame_height: int = 400
 
     def content_text(self) -> str:
         return "\n".join([self.narrative] + [f"{i+1}:{t}" for i, t in enumerate(self.options)])
