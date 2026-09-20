@@ -33,6 +33,7 @@ varies by distribution.
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -e .
+source .venv/bin/activate
 ```
 
 Configure non-default locations with environment variables:
@@ -41,7 +42,7 @@ Configure non-default locations with environment variables:
 | --- | --- |
 | `DOSBOX_API_URL` | `http://127.0.0.1:8086` |
 | `DARKTEXT_DATA_DIR` | `~/darklands-accessibility` (backward compatible) |
-| `DARKTEXT_PIPER_BIN` | `piper` on `PATH`, then the existing local installation |
+| `DARKTEXT_PIPER_BIN` | `piper` on `PATH` |
 | `DARKTEXT_VOICE_DIR` | `~/.local/share/piper-tts/voices` |
 
 ## Usage
@@ -56,6 +57,8 @@ darktext daemon
 ```
 
 The daemon announces new dialog and follows the currently highlighted option.
+`once --speak` waits for the selected option or narrative to finish playing
+before exiting, and returns a nonzero status if speech cannot be launched.
 Generated cache files and diagnostics are stored beneath `DARKTEXT_DATA_DIR`.
 
 ## Test

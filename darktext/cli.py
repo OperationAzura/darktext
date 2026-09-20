@@ -35,26 +35,33 @@ def cmd_once(args) -> int:
         speaker = DirectLiveSpeaker(audio_cache=audio_cache)
         wav_player = CachedWavPlayer()
 
-        if state.selected is not None and 0 <= state.selected - 1 < len(state.options):
-            idx = state.selected - 1
-            text = state.options[idx].strip()
-            voice = get_voice_for_option(idx)
-            voice_name = voice.stem if voice else None
+        try:
+            if state.selected is not None and 0 <= state.selected - 1 < len(state.options):
+                idx = state.selected - 1
+                text = state.options[idx].strip()
+                voice = get_voice_for_option(idx)
+                voice_name = voice.stem if voice else None
 
-            cached = audio_cache.get_cached_wav(text, voice_name)
-            if cached is not None and wav_player.play(cached):
-                print(f"darktext: spoke selection [cache]: {text}")
-            else:
-                speaker.speak_option(text, voice, cache_on_finish=True)
-                print(f"darktext: spoke selection [live]: {text}")
-        elif state.narrative.strip():
-            speaker.speak(state.narrative.strip())
-            print(f"darktext: spoke narrative: {state.narrative.strip()}")
+                cached = audio_cache.get_cached_wav(text, voice_name)
+                if cached is not None and wav_player.play(cached):
+                    print(f"darktext: spoke selection [cache]: {text}")
+                else:
+                    if not speaker.speak_option(text, voice, cache_on_finish=True):
+                        print("darktext: speech launch failed", file=sys.stderr)
+                        return 1
+                    print(f"darktext: spoke selection [live]: {text}")
+            elif state.narrative.strip():
+                if not speaker.speak(state.narrative.strip()):
+                    print("darktext: speech launch failed", file=sys.stderr)
+                    return 1
+                print(f"darktext: spoke narrative: {state.narrative.strip()}")
 
-        time.sleep(2.0)
-        audio_cache.stop()
-        wav_player.stop()
-        speaker.stop()
+            while wav_player.is_alive() or speaker.is_alive():
+                time.sleep(0.05)
+        finally:
+            wav_player.stop()
+            speaker.stop()
+            audio_cache.stop()
 
     return 0
 
