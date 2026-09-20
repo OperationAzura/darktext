@@ -9,6 +9,13 @@ with local Piper voices. It captures the native emulated framebuffer from the
 companion DOSBox Staging fork, so it does not depend on window focus or desktop
 screen capture.
 
+## Experimental RAM capture branch
+
+This branch adds `python -m darktext.ram_text --exe /path/to/darkland.exe`
+for direct resolved-text capture without OCR. It is a research prototype: the
+shared buffer can contain stale text and hidden choices. See
+[RAM capture findings and usage](docs/ram-text-research.md) before testing.
+
 ## Features
 
 - OCR of Darklands narrative text and menu choices

@@ -23,6 +23,7 @@ dependencies = [
 
 [project.scripts]
 darktext = "darktext.cli:main"
+darktext-ram = "darktext.ram_text:main"
 
 [tool.setuptools]
 packages = ["darktext"]

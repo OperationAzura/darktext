@@ -2,6 +2,9 @@
 
 __version__ = "2.0.0"
 
-from .cli import main
+def main():
+    """Load the OCR CLI only when requested."""
+    from .cli import main as cli_main
+    return cli_main()
 
 __all__ = ["main", "__version__"]
