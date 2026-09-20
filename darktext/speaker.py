@@ -1,6 +1,5 @@
 """Direct audio output and TTS playback with low-latency streaming."""
 
-import hashlib
 import os
 import re
 import shutil
@@ -8,10 +7,10 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
 from .audio_cache import OptionAudioCache
+from .voice import voice_sample_rate
 from .config import DIRECT_PIPER_BIN, DIRECT_VOICE_DIR, TTS_COMMAND_FILE
 
 
@@ -68,7 +67,7 @@ class CachedWavPlayer:
             except Exception:
                 pass
 
-        if pgid is not None:
+        if pgid is not None and proc is not None and proc.poll() is None:
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
@@ -141,10 +140,11 @@ class DirectLiveSpeaker:
                     proc.kill()
                 except Exception:
                     pass
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
                 try:
                     proc.wait(timeout=0.1)
                 except Exception:
@@ -153,16 +153,14 @@ class DirectLiveSpeaker:
         self.aplay_proc = None
         self.piper_proc = None
         self.pgid = None
+        thread = self._pump_thread
+        if thread is not None:
+            thread.join(timeout=0.2)
+        self._pump_thread = None
 
     def is_alive(self) -> bool:
-        """Check if speech is currently outputting sound."""
-        if self.aplay_proc is not None:
-            if self.aplay_proc.poll() is None:
-                return True
-            self.aplay_proc = None
-            self.piper_proc = None
-            self.pgid = None
-        return False
+        """Include synthesis and cache finalization in the utterance lifetime."""
+        return bool(self._pump_thread and self._pump_thread.is_alive())
 
     def speak(self, text: str) -> bool:
         """Speak narrative using narrative voice."""
@@ -181,11 +179,14 @@ class DirectLiveSpeaker:
             return False
 
         self.stop()
-        self._stop_requested.clear()
+        # Never clear a token an older pump still holds.
+        stop = threading.Event()
+        self._stop_requested = stop
 
         piper = None
         aplay = None
         try:
+            sample_rate = voice_sample_rate(model)
             piper = subprocess.Popen(
                 [
                     str(DIRECT_PIPER_BIN),
@@ -206,7 +207,7 @@ class DirectLiveSpeaker:
                     "-f",
                     "S16_LE",
                     "-r",
-                    "22050",
+                    str(sample_rate),
                     "-c",
                     "1",
                     "--buffer-time=20000",
@@ -230,8 +231,12 @@ class DirectLiveSpeaker:
                 if proc is not None:
                     try:
                         proc.kill()
+                        proc.wait(timeout=1.0)
                     except Exception:
                         pass
+                    for stream in (proc.stdin, proc.stdout):
+                        if stream is not None:
+                            stream.close()
             print(f"darktext: direct live TTS launch error: {exc}", file=sys.stderr, flush=True)
             return False
 
@@ -242,19 +247,21 @@ class DirectLiveSpeaker:
         # Background thread pumps from Piper to aplay and collects PCM for caching
         def pump():
             chunks = []
-            stop = self._stop_requested
             p_stdout = piper.stdout
             a_stdin = aplay.stdin
             cache = self.audio_cache
             voice_name = model.stem
 
+            complete = False
             try:
                 while not stop.is_set():
-                    buf = p_stdout.read(4096)
+                    buf = p_stdout.read1(4096)
                     if not buf:
+                        complete = True
                         break
                     try:
                         a_stdin.write(buf)
+                        a_stdin.flush()
                     except (BrokenPipeError, OSError):
                         break
                     if cache_on_finish:
@@ -271,20 +278,23 @@ class DirectLiveSpeaker:
                 except Exception:
                     pass
 
-                try:
-                    piper.wait(timeout=1.0)
-                except Exception:
-                    pass
-                try:
-                    aplay.wait(timeout=1.0)
-                except Exception:
-                    pass
+                # On a broken audio pipe the producer may still be running.
+                # Reap both children before reporting this utterance finished.
+                for proc in (piper, aplay):
+                    if not complete or stop.is_set():
+                        try:
+                            proc.kill()
+                        except ProcessLookupError:
+                            pass
+                    proc.wait()
 
                 # If speech completed cleanly without interruption, cache the audio!
-                if cache_on_finish and not stop.is_set() and cache is not None:
+                if (cache_on_finish and complete and not stop.is_set()
+                        and piper.returncode == 0 and aplay.returncode == 0
+                        and cache is not None):
                     raw_pcm = b"".join(chunks)
                     if len(raw_pcm) >= 1000:
-                        cache.save_pcm(text, voice_name, raw_pcm)
+                        cache.save_pcm(text, voice_name, raw_pcm, sample_rate=sample_rate)
 
         thread = threading.Thread(target=pump, daemon=True)
         self._pump_thread = thread

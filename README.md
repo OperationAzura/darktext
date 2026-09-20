@@ -79,3 +79,14 @@ memory and input controls.
 ## License
 
 [MIT](LICENSE). DarkText's runtime dependencies retain their own licenses.
+
+## OCR and speech reliability
+
+The reader debounces highlights for 40 ms, rejects OCR results from a screen
+that has changed, and periodically refreshes small text changes. Speech uses
+voice-model sample-rate metadata, and completed menu audio up to 30 seconds can
+be cached. Interrupted or failed synthesis is not cached.
+
+See the [implementation review and validation notes](docs/ocr-speech-improvements.md)
+for the changes, tradeoffs, and further accuracy work that needs captured-game
+benchmarks.

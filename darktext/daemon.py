@@ -1,13 +1,15 @@
 """Main background daemon for monitoring Darklands screen and speaking text."""
 
 import re
-import sys
+import signal
 import time
 
 from .audio_cache import OptionAudioCache
 from .capture import capture_logical_game
 from .config import (
     FAST_HOVER_POLL,
+    FAST_HOVER_DWELL,
+    FORCED_OCR_INTERVAL,
     FOLLOWUPS,
     SCENE_CHANGE_RATIO,
     SCENE_CHECK_INTERVAL,
@@ -15,6 +17,7 @@ from .config import (
 )
 from .fast_detector import (
     FastOcrWorker,
+    HoverDebouncer,
     fast_change_ratio,
     fast_selected_index,
     fast_signature,
@@ -71,18 +74,26 @@ def cmd_daemon(args) -> int:
     last_scene_check = 0.0
     ocr_pending = False
     refresh_after_pending = False
+    hover = HoverDebouncer(FAST_HOVER_DWELL)
+    scene_unsettled = state is None
+    last_ocr_request = time.monotonic()
 
     now = time.monotonic()
     followup_due = [now + x for x in FOLLOWUPS] if state is not None else []
 
     def queue_ocr(current_frame, reason):
-        nonlocal ocr_pending
+        nonlocal ocr_pending, last_ocr_request
         sig = fast_signature(current_frame)
         if worker.request(current_frame, sig, reason):
             ocr_pending = True
+            last_ocr_request = time.monotonic()
             return True
         return False
 
+    def terminate(signum, frame):
+        raise KeyboardInterrupt
+
+    previous_sigterm = signal.signal(signal.SIGTERM, terminate)
     try:
         while True:
             loop_start = time.monotonic()
@@ -105,6 +116,13 @@ def cmd_daemon(args) -> int:
                 if error is not None:
                     log(f"background OCR error: {error}")
                 elif new_state is not None:
+                    if fast_change_ratio(new_sig, fast_signature(frame)) >= SCENE_CHANGE_RATIO:
+                        # OCR describes a screen that has already gone away.
+                        scene_unsettled = True
+                        refresh_after_pending = False
+                        queue_ocr(frame, "stale-result-refresh")
+                        continue
+                    scene_unsettled = False
                     visual_change = fast_change_ratio(base_sig, new_sig)
                     menu_evidence = bool(
                         new_state.options
@@ -126,6 +144,7 @@ def cmd_daemon(args) -> int:
                         base_sig = new_sig
                         builder = TemporalOptionBuilder()
                         active_hover_slot = None
+                        hover = HoverDebouncer(FAST_HOVER_DWELL)
                         unhover_start = 0.0
 
                         speaker.stop()
@@ -172,16 +191,29 @@ def cmd_daemon(args) -> int:
                     refresh_after_pending = False
                     queue_ocr(frame, "deferred-selection-refresh")
 
+            # Check for transitions before using geometry from the previous screen.
+            if now - last_scene_check >= SCENE_CHECK_INTERVAL:
+                last_scene_check = now
+                sig = fast_signature(frame)
+                ratio = fast_change_ratio(base_sig, sig)
+                if ratio >= SCENE_CHANGE_RATIO:
+                    scene_unsettled = True
+                    if not ocr_pending:
+                        queue_ocr(frame, f"scene-change:{ratio:.3f}")
+                elif not ocr_pending and now - last_ocr_request >= FORCED_OCR_INTERVAL:
+                    queue_ocr(frame, "periodic-refresh")
+
             # 2. Fast hover detection (runs every 10ms)
             texts = builder.texts()
             regions = builder.regions()
             selected: int | None = None
 
-            if texts and regions and len(texts) == len(regions):
+            if not scene_unsettled and texts and regions and len(texts) == len(regions):
                 selected = fast_selected_index(frame, regions)
                 if selected is not None and not (0 <= selected < len(texts)):
                     selected = None
 
+            selected = hover.update(selected, now)
             if selected is not None:
                 unhover_start = 0.0
                 # Trigger when entering a new option, or re-hovering after unhover
@@ -197,7 +229,7 @@ def cmd_daemon(args) -> int:
                         voice_model = get_voice_for_option(selected)
                         voice_name = voice_model.stem if voice_model else None
 
-                        # Check persistent cache (exact or fuzzy match)
+                        # Check persistent cache by normalized text hash
                         cached, match_info, _sim = audio_cache.get_cached_wav_with_info(
                             text, voice_name
                         )
@@ -231,20 +263,13 @@ def cmd_daemon(args) -> int:
                         unhover_start = now
                     elif now - unhover_start >= 0.120:  # 120ms debounce
                         active_hover_slot = None
+                        hover = HoverDebouncer(FAST_HOVER_DWELL)
                         unhover_start = 0.0
 
             # 3. Staged followup OCR passes to repair partially obscured lines
             if not ocr_pending and followup_due and now >= followup_due[0]:
                 due = followup_due.pop(0)
                 queue_ocr(frame, f"staged-cleanup:{due:.3f}")
-
-            # 4. Periodic scene change check
-            if now - last_scene_check >= SCENE_CHECK_INTERVAL:
-                last_scene_check = now
-                sig = fast_signature(frame)
-                ratio = fast_change_ratio(base_sig, sig)
-                if ratio >= SCENE_CHANGE_RATIO and not ocr_pending:
-                    queue_ocr(frame, f"scene-change:{ratio:.3f}")
 
             # 5. Rate limit loop to FAST_HOVER_POLL
             elapsed = time.monotonic() - loop_start
@@ -254,6 +279,8 @@ def cmd_daemon(args) -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        audio_cache.stop()
-        wav_player.stop()
+        signal.signal(signal.SIGTERM, previous_sigterm)
         speaker.stop()
+        wav_player.stop()
+        audio_cache.stop()
+        worker.stop()

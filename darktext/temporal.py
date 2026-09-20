@@ -176,6 +176,8 @@ class TemporalOptionBuilder:
         self.slots: list[dict] = []
         self.next_id = 1
         self.observation_count = 0
+        self._texts_cache = None
+        self._regions_cache = None
 
     def _new_option_slot(self, start_y: float) -> dict:
         slot = {
@@ -188,10 +190,11 @@ class TemporalOptionBuilder:
         self.slots.sort(key=lambda x: x["start_y"])
         return slot
 
-    def _nearest_option(self, start_y: float) -> dict | None:
-        if not self.slots:
+    def _nearest_option(self, start_y: float, exclude=()) -> dict | None:
+        candidates = [slot for slot in self.slots if slot["id"] not in exclude]
+        if not candidates:
             return None
-        slot = min(self.slots, key=lambda x: abs(x["start_y"] - start_y))
+        slot = min(candidates, key=lambda x: abs(x["start_y"] - start_y))
         if abs(slot["start_y"] - start_y) <= TEMPORAL_OPTION_Y_TOL:
             return slot
         return None
@@ -199,6 +202,7 @@ class TemporalOptionBuilder:
     def _discover_option_starts(self, state: ScreenState):
         previous = None
         options_started = False
+        observed_slots = set()
 
         for line in sorted(state.raw_lines, key=lambda item: (item.y1, item.x1)):
             # Darklands option rows sometimes lose their three-dot marker to
@@ -216,11 +220,12 @@ class TemporalOptionBuilder:
 
             options_started = True
             y = (float(line.y1) + float(line.y2)) / 2.0
-            slot = self._nearest_option(y)
+            slot = self._nearest_option(y, exclude=observed_slots)
             if slot is None:
-                self._new_option_slot(y)
+                slot = self._new_option_slot(y)
             else:
                 slot["start_y"] = 0.82 * slot["start_y"] + 0.18 * y
+            observed_slots.add(slot["id"])
             previous = line
         self.slots.sort(key=lambda x: x["start_y"])
         self._rebalance_lines()
@@ -283,6 +288,8 @@ class TemporalOptionBuilder:
         if state is None:
             return
 
+        self._texts_cache = None
+        self._regions_cache = None
         self.observation_count += 1
         self._discover_option_starts(state)
         if not self.slots:
@@ -331,6 +338,8 @@ class TemporalOptionBuilder:
             )[:TEMPORAL_MAX_SAMPLES]
 
     def texts(self) -> list[str]:
+        if self._texts_cache is not None:
+            return list(self._texts_cache)
         out = []
         for option in sorted(self.slots, key=lambda x: x["start_y"]):
             parts = []
@@ -339,12 +348,15 @@ class TemporalOptionBuilder:
                 if best:
                     parts.append(best)
             out.append(re.sub(r"\s+", " ", " ".join(parts)).strip())
+        self._texts_cache = tuple(out)
         return out
 
     def ids(self) -> list[int]:
         return [x["id"] for x in sorted(self.slots, key=lambda x: x["start_y"])]
 
     def regions(self) -> list[tuple[int, int, int, int]]:
+        if self._regions_cache is not None:
+            return list(self._regions_cache)
         ordered = sorted(self.slots, key=lambda x: x["start_y"])
         out = []
         for i, option in enumerate(ordered):
@@ -365,6 +377,7 @@ class TemporalOptionBuilder:
                 y2 = observed_bottom + 8
 
             out.append((x1, y1, x2, y2))
+        self._regions_cache = tuple(out)
         return out
 
     def compatible(self, new_state: ScreenState | None, visual_change: float) -> bool:
@@ -398,4 +411,8 @@ class TemporalOptionBuilder:
         if visual_change >= TEMPORAL_DIALOG_HARD_CHANGE and text_score < 0.35:
             return False
 
-        return geometry >= 0.55 or text_score >= 0.46
+        # Geometry alone is not dialog identity: many unrelated menus reuse
+        # exactly the same rows. Require textual agreement when OCR found text.
+        if built and fresh:
+            return text_score >= 0.46
+        return geometry >= 0.55 and visual_change < TEMPORAL_DIALOG_HARD_CHANGE

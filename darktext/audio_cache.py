@@ -8,13 +8,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import wave
 from pathlib import Path
 
-from .config import AUDIO_CACHE_DIR, DIRECT_PIPER_BIN, DIRECT_VOICE_DIR, SAMPLE_RATE
-from .temporal import _temporal_similarity
+from .config import AUDIO_CACHE_DIR, DIRECT_PIPER_BIN, SAMPLE_RATE
+from .voice import voice_sample_rate
 
 
 def normalize_audio_text(text: str) -> str:
@@ -34,6 +35,8 @@ def text_content_hash(text: str) -> str:
 class OptionAudioCache:
     """Persistent content-addressable audio cache and background synthesizer."""
 
+    MAX_AUDIO_SECONDS = 30
+
     WORKERS = 2  # Utilize multi-core processor for parallel background synthesis
 
     def __init__(self, cache_dir: Path = AUDIO_CACHE_DIR):
@@ -43,6 +46,7 @@ class OptionAudioCache:
         self.lock = threading.Lock()
         self.queue: queue.PriorityQueue = queue.PriorityQueue()
         self.counter = 0
+        self._generation = 0
         self._pending_keys: set[tuple[str, str]] = set()
 
         # In-memory index: text_hash -> dict of {voice_name: Path}
@@ -66,19 +70,26 @@ class OptionAudioCache:
             t.start()
             self._workers.append(t)
 
+    @classmethod
+    def _valid_wav(cls, path: Path) -> bool:
+        try:
+            with wave.open(str(path), "rb") as wav:
+                frames = wav.getnframes()
+                return (wav.getnchannels() == 1 and wav.getsampwidth() == 2
+                        and 8000 <= wav.getframerate() <= 192000
+                        and 500 <= frames <= wav.getframerate() * cls.MAX_AUDIO_SECONDS
+                        and len(wav.readframes(frames)) == frames * 2)
+        except (OSError, EOFError, wave.Error):
+            return False
+
     def _scan_existing_cache(self):
-        """Index existing cached WAV files on disk and remove any corrupted oversized files."""
+        """Index complete WAV files, retaining valid longer options at their native rate."""
         count = 0
         for wav_path in self.cache_dir.glob("*.wav"):
             if wav_path.name.endswith(".tmp.wav"):
                 continue
             try:
-                size = wav_path.stat().st_size
-                # An option choice in Darklands is at most ~15 words (~160KB).
-                # Purge any oversized audio from previous buggy merges.
-                if size < 1000 or size > 160000:
-                    wav_path.unlink(missing_ok=True)
-                    wav_path.with_suffix(".txt").unlink(missing_ok=True)
+                if not self._valid_wav(wav_path):
                     continue
                 # Expected format: <voice_name>_<text_hash>.wav
                 parts = wav_path.stem.split("_")
@@ -144,7 +155,7 @@ class OptionAudioCache:
         # Check disk directly in case written externally
         if preferred_voice_name:
             candidate = self.cache_dir / f"{preferred_voice_name}_{h}.wav"
-            if candidate.is_file() and 1000 <= candidate.stat().st_size <= 160000:
+            if candidate.is_file() and self._valid_wav(candidate):
                 self._record(h, preferred_voice_name, candidate)
                 self.record_text_mapping(text)
                 return candidate, "exact", 1.0
@@ -158,9 +169,12 @@ class OptionAudioCache:
         p, _, _ = self.get_cached_wav_with_info(text, preferred_voice_name)
         return p
 
-    def save_pcm(self, text: str, voice_name: str, pcm_bytes: bytes) -> Path | None:
+    def save_pcm(self, text: str, voice_name: str, pcm_bytes: bytes,
+                 sample_rate: int = SAMPLE_RATE) -> Path | None:
         """Atomically wrap raw PCM into a cached WAV file, write text sidecar, and update index."""
-        if not text or len(pcm_bytes) < 1000 or len(pcm_bytes) > 160000:
+        if (not text or not 8000 <= sample_rate <= 192000
+                or len(pcm_bytes) < 1000 or len(pcm_bytes) % 2
+                or len(pcm_bytes) > sample_rate * 2 * self.MAX_AUDIO_SECONDS):
             return None
 
         norm = normalize_audio_text(text)
@@ -171,14 +185,19 @@ class OptionAudioCache:
         self.record_text_mapping(text)
 
         final_path = self.cache_dir / f"{voice_name}_{h}.wav"
-        tmp_path = self.cache_dir / f"{voice_name}_{h}.tmp.wav"
+        tmp_path = None
         txt_path = self.cache_dir / f"{voice_name}_{h}.txt"
 
         try:
+            with tempfile.NamedTemporaryFile(
+                dir=self.cache_dir, prefix=f"{voice_name}_{h}_", suffix=".tmp.wav",
+                delete=False,
+            ) as temporary:
+                tmp_path = Path(temporary.name)
             with wave.open(str(tmp_path), "wb") as wav:
                 wav.setnchannels(1)
                 wav.setsampwidth(2)
-                wav.setframerate(SAMPLE_RATE)
+                wav.setframerate(sample_rate)
                 wav.writeframes(pcm_bytes)
             os.replace(tmp_path, final_path)
             try:
@@ -188,7 +207,8 @@ class OptionAudioCache:
             self._record(h, voice_name, final_path)
             return final_path
         except Exception as exc:
-            tmp_path.unlink(missing_ok=True)
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
             print(f"darktext: failed to save audio cache file: {exc}", file=sys.stderr, flush=True)
             return None
 
@@ -221,7 +241,7 @@ class OptionAudioCache:
             h = text_content_hash(cleaned)
             key = (h, voice_name)
             with self.lock:
-                if key in self._pending_keys:
+                if self._stop_event.is_set() or key in self._pending_keys:
                     continue
                 self._pending_keys.add(key)
                 self.counter += 1
@@ -233,101 +253,89 @@ class OptionAudioCache:
                 else:
                     priority = 5 + i
 
-                self.queue.put((priority, self.counter, cleaned, voice_name, voice_model))
+                self.queue.put((priority, self.counter, cleaned, voice_name, voice_model, self._generation))
 
     def clear_queue(self):
-        """Clear pending background synthesis jobs without deleting cached audio files."""
+        """Invalidate queued/claimed jobs and terminate active synthesis."""
         with self.lock:
-            while not self.queue.empty():
+            self._generation += 1
+            while True:
                 try:
                     self.queue.get_nowait()
                 except queue.Empty:
                     break
             self._pending_keys.clear()
-
-        # Stop active synthesis processes
-        with self.lock:
             procs = list(self._active_procs)
         for proc in procs:
+            self._terminate(proc)
+
+    @staticmethod
+    def _terminate(proc):
+        if proc.poll() is None:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-            try:
-                proc.wait(timeout=0.2)
-            except Exception:
-                pass
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
 
     def stop(self):
-        """Shut down background workers cleanly."""
+        """Shut down background workers and reap their subprocesses."""
         self._stop_event.set()
         self.clear_queue()
+        for worker in self._workers:
+            worker.join(timeout=1.0)
 
     def _worker_loop(self):
-        """Background thread that pre-renders queued options."""
         while not self._stop_event.is_set():
             try:
-                item = self.queue.get(timeout=0.2)
+                item = self.queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-
-            priority, _counter, text, voice_name, voice_model = item
-            h = text_content_hash(text)
-            key = (h, voice_name)
-
-            with self.lock:
-                self._pending_keys.discard(key)
-
-            # Skip if it got cached while waiting in queue
-            if self.get_cached_wav(text, voice_name) is not None:
-                continue
-
-            piper_cmd = [
-                str(DIRECT_PIPER_BIN),
-                "-m",
-                str(voice_model),
-                "--output-raw",
-            ]
-            nice_bin = shutil.which("nice")
-            if nice_bin:
-                piper_cmd = [nice_bin, "-n", "10"] + piper_cmd
-
-            started = time.monotonic()
+            priority, _counter, text, voice_name, voice_model, generation = item
+            key = (text_content_hash(text), voice_name)
             proc = None
+            started = time.monotonic()
             try:
-                proc = subprocess.Popen(
-                    piper_cmd,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
+                if self.get_cached_wav(text, voice_name) is not None:
+                    continue
+                sample_rate = voice_sample_rate(voice_model)
+                piper_cmd = [str(DIRECT_PIPER_BIN), "-m", str(voice_model), "--output-raw"]
+                nice_bin = shutil.which("nice")
+                if nice_bin:
+                    piper_cmd = [nice_bin, "-n", "10"] + piper_cmd
+                # Claim and launch under the same lock as cancellation. A job
+                # removed from the queue cannot slip past clear_queue().
                 with self.lock:
+                    if generation != self._generation or self._stop_event.is_set():
+                        continue
+                    proc = subprocess.Popen(
+                        piper_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL, start_new_session=True,
+                    )
                     self._active_procs.add(proc)
-
-                raw, _ = proc.communicate(
-                    input=(text + "\n").encode("utf-8"),
-                    timeout=25,
-                )
-
-                if proc.returncode == 0 and len(raw) >= 1000:
-                    saved = self.save_pcm(text, voice_name, raw)
-                    elapsed = time.monotonic() - started
+                raw, _ = proc.communicate(input=(text + "\n").encode(), timeout=25)
+                with self.lock:
+                    current = generation == self._generation and not self._stop_event.is_set()
+                if current and proc.returncode == 0:
+                    saved = self.save_pcm(text, voice_name, raw, sample_rate=sample_rate)
                     if saved is not None:
-                        print(
-                            f"darktext: CACHE DONE [{voice_name}, {elapsed:.2f}s]: {text}",
-                            flush=True,
-                        )
-
+                        log_time = time.monotonic() - started
+                        print(f"darktext: CACHE DONE [{voice_name}, {log_time:.2f}s]: {text}", flush=True)
             except subprocess.TimeoutExpired:
                 if proc is not None:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
+                    self._terminate(proc)
             except Exception as exc:
                 print(f"darktext: background Piper error: {exc}", file=sys.stderr, flush=True)
             finally:
                 if proc is not None:
-                    with self.lock:
-                        self._active_procs.discard(proc)
+                    for stream in (proc.stdin, proc.stdout):
+                        if stream is not None:
+                            stream.close()
+                with self.lock:
+                    self._active_procs.discard(proc)
+                    # Do not remove a newer generation's job for the same text.
+                    if generation == self._generation:
+                        self._pending_keys.discard(key)

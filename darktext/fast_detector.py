@@ -8,7 +8,6 @@ import numpy as np
 
 from .config import TEXT_RECT
 from .ocr import extract_state
-from .models import ScreenState
 
 
 def fast_signature(game: np.ndarray) -> np.ndarray:
@@ -78,9 +77,13 @@ class FastOcrWorker:
         self.engine = engine
         self.inbox = queue.Queue(maxsize=1)
         self.outbox = queue.Queue(maxsize=2)
-        threading.Thread(target=self._run, daemon=True).start()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
     def request(self, frame: np.ndarray, signature: np.ndarray, reason: str) -> bool:
+        if self._stop.is_set():
+            return False
         item = (frame.copy(), signature.copy(), reason, time.monotonic())
         try:
             self.inbox.put_nowait(item)
@@ -104,14 +107,23 @@ class FastOcrWorker:
             except queue.Empty:
                 return newest
 
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
     def _run(self):
-        while True:
-            frame, sig, reason, started = self.inbox.get()
+        while not self._stop.is_set():
+            try:
+                frame, sig, reason, started = self.inbox.get(timeout=0.1)
+            except queue.Empty:
+                continue
             try:
                 state = extract_state(self.engine, frame)
                 item = (state, sig, reason, started, time.monotonic(), None)
             except Exception as exc:
                 item = (None, sig, reason, started, time.monotonic(), exc)
+            if self._stop.is_set():
+                return
             try:
                 self.outbox.put_nowait(item)
             except queue.Full:
@@ -123,3 +135,20 @@ class FastOcrWorker:
                     self.outbox.put_nowait(item)
                 except queue.Full:
                     pass
+
+
+class HoverDebouncer:
+    """Accept a highlight only after it persists for a short dwell interval."""
+
+    def __init__(self, dwell):
+        self.dwell = dwell
+        self.candidate = None
+        self.since = 0.0
+
+    def update(self, selected, now):
+        if selected != self.candidate:
+            self.candidate = selected
+            self.since = now
+        if selected is not None and now - self.since >= self.dwell:
+            return selected
+        return None

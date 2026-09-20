@@ -39,10 +39,10 @@ CONTENT_SIMILARITY = 0.93
 
 # Fast hover detection loop settings
 FAST_HOVER_POLL = 0.010       # 10ms poll interval
-FAST_HOVER_DWELL = 0.0
+FAST_HOVER_DWELL = 0.040  # reject transient highlight detections
 SCENE_CHECK_INTERVAL = 0.120  # 120ms between scene change checks
 SCENE_CHANGE_RATIO = 0.035
-FORCED_OCR_INTERVAL = 0.8
+FORCED_OCR_INTERVAL = 3.0  # catch small changes below the scene threshold
 
 # Temporal multi-frame option builder settings
 TEMPORAL_MAX_SAMPLES = 12
