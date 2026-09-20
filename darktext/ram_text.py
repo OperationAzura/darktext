@@ -4,6 +4,7 @@ import argparse
 import base64
 from dataclasses import asdict, dataclass
 import hashlib
+from http.client import HTTPException
 import json
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ SIGNATURE_SIZE = 0x60
 BUFFER_OFFSET = 0x9085
 BUFFER_SIZE = 0x320
 POINTER_OFFSET = 0x8CA
+READ_ERRORS = (OSError, ValueError, KeyError, TypeError, HTTPException)
 OPTION_CODES = b'\x06\x10\x15\x16'
 
 
@@ -93,13 +95,25 @@ class RamReader:
                 and segment[SIGNATURE_DS_OFFSET:SIGNATURE_DS_OFFSET + SIGNATURE_SIZE] == self.signature
                 and struct.unpack_from('<HH', segment, POINTER_OFFSET) == (BUFFER_OFFSET, base >> 4))
 
-    def read(self) -> BufferText:
-        if self.base is None:
-            self.base = self.locate(memory(self.api, 0, 0xA0000))
-        segment = memory(self.api, self.base, 0x10000)
-        if not self.valid_segment(segment, self.base):
+    def read_segment(self) -> bytes:
+        """Discard stale addresses on *all* transport/profile failures.
+
+        The caller retries on the next poll, which performs fresh discovery.
+        Decode failures do not discard the address: popup data is still valid RAM.
+        """
+        try:
+            if self.base is None:
+                self.base = self.locate(memory(self.api, 0, 0xA0000))
+            segment = memory(self.api, self.base, 0x10000)
+            if not self.valid_segment(segment, self.base):
+                raise ValueError('Darklands memory profile no longer matches')
+            return segment
+        except READ_ERRORS:
             self.base = None
-            raise ValueError('Darklands memory profile no longer matches')
+            raise
+
+    def read(self) -> BufferText:
+        segment = self.read_segment()
         return decode_buffer(segment[BUFFER_OFFSET:BUFFER_OFFSET + BUFFER_SIZE])
 
 
@@ -110,7 +124,13 @@ def main() -> int:
     parser.add_argument('--api', default='http://127.0.0.1:8086')
     parser.add_argument('--watch', action='store_true', help='print changed stable buffers as JSON lines')
     parser.add_argument('--speak', action='store_true', help='read narrative once; options are never spoken')
+    parser.add_argument('--record', type=Path, help='create a new diagnostic session directory; implies --watch')
+    parser.add_argument('--max-log-mb', type=int, default=256, help='recording size budget (default 256 MiB)')
     args = parser.parse_args()
+    if args.max_log_mb < 1:
+        parser.error('--max-log-mb must be positive')
+    if args.record:
+        args.watch = True
     if args.watch and args.speak:
         parser.error('automatic speech is disabled until active-screen identity is verified; use --speak once')
     try:
@@ -132,25 +152,11 @@ def main() -> int:
                 finally:
                     speaker.stop()
             return 0
-        previous = emitted = None
-        last_error = None
-        while True:
-            try:
-                current = reader.read()
-                if current == previous and current != emitted:
-                    print(json.dumps(asdict(current)), flush=True)
-                    emitted = current
-                previous = current
-                last_error = None
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                previous = emitted = None
-                if str(exc) != last_error:
-                    print(json.dumps({'unavailable': str(exc)}), flush=True)
-                last_error = str(exc)
-            time.sleep(.15)
+        from .ram_session import watch
+        return watch(reader, args.record, args.max_log_mb)
     except KeyboardInterrupt:
         return 0
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except READ_ERRORS as exc:
         print(f'darktext-ram: {exc}', file=sys.stderr)
         return 1
 

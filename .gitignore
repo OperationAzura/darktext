@@ -10,3 +10,6 @@ debug/
 logs/
 tts-cache/
 runtime.json
+
+# Local gameplay diagnostics (contains game data)
+ram-recordings/

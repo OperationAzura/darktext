@@ -60,7 +60,11 @@ python -m darktext.ram_text --exe /path/to/darkland.exe --watch
 After installing this branch, the equivalent entry point is `darktext-ram`.
 `--api http://127.0.0.1:8086` selects the API base URL. Output is JSON, including
 `narrative`, `candidate_options`, `visibility: "unverified"`, and `selection: null`.
-Watch mode emits changed stable buffers, plus explicit unavailable events on errors.
+Watch mode now emits structured lifecycle events, including `dialog_buffer_changed`,
+`auxiliary_buffer`, `dialog_buffer_restored`, `context_changed`, and `unavailable`.
+Retained parent text is labelled unverified; it is never silently promoted to
+current screen text. See the [gameplay recording guide](recording-ram-sessions.md)
+for the cache, strengthened recovery, and diagnostic launcher.
 
 For a deliberate one-time narrative reading, configure the existing Piper/voice
 environment variables and add `--speak`. Options are never spoken. `--watch --speak`
@@ -90,7 +94,7 @@ Consequences:
 - No performance advantage is claimed beyond eliminating OCR inference; a full
   latency and screen-coverage comparison has not yet been performed.
 
-The next implementation step is tracing the shared layout/input controller's row
+The remaining implementation step is tracing the shared layout/input controller's row
 publication table and lifecycle. We need the active owner/card, raw row ordinals,
 hidden/disabled/selectable status, geometry, and hover index. If those cannot be
 sampled reliably, add a narrow DOSBox event hook after expansion/publication and

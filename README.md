@@ -16,6 +16,10 @@ for direct resolved-text capture without OCR. It is a research prototype: the
 shared buffer can contain stale text and hidden choices. See
 [RAM capture findings and usage](docs/ram-text-research.md) before testing.
 
+For gameplay diagnostics, run `./scripts/record-ram-session.sh`. It starts the
+game and recorder without OCR. See the [recording guide](docs/recording-ram-sessions.md)
+for popup tests, notes, recovery behavior, and where the data is saved.
+
 ## Features
 
 - OCR of Darklands narrative text and menu choices
