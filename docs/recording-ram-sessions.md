@@ -107,7 +107,9 @@ invalidation signals. They are **not certified dialog/card identifiers**.
 Changing them clears the parent, and unchanged old buffer bytes cannot refill it
 until the buffer changes. Address relocation and connection loss also clear it.
 
-Recipe-popup closure is now supported for a parent captured earlier in the same
-uninterrupted context. Other popup families, startup with an already-stale
+Recipe and learning-saints popup closure are supported for a parent captured
+earlier in the same uninterrupted context. Popup signals inherited across a
+context change are ignored until a consistent closed state re-arms detection;
+they cannot suppress a new narrative. Other popup families, startup with an already-stale
 buffer, and hidden-option filtering remain unresolved. Recordings still help us
 extend coverage; automatic speech remains disabled.

@@ -65,3 +65,33 @@ records (schema 2), allowing future recordings to resolve shorter transitions
 than the periodic screenshots. Automatic speech and selectable-row filtering
 remain disabled/unverified respectively. A retained parent is identified, but
 its candidate option list is not thereby proven to match visible enabled rows.
+
+## Learning-saints follow-up
+
+Session `20260920-140443` contains 60 snapshot pairs over approximately 109
+seconds. The learning-saints dropdown uses the same flag/handle mechanism.
+Snapshots 46–47 and 49–52 show it open; 48 and 53 show it closed. The recorded
+reader restored the library parent at 87.4 and 96.5 seconds. A third opening
+occurs around 97.5 seconds; selection leads to a time-passage overlay and then
+a different game context rather than another simple cancellation.
+
+This revealed a lifecycle constraint: popup fields can outlive their owner.
+At snapshot 58, the monitored context changes from `360013000000` to
+`390036000000` while the flag and handle still indicate open. At snapshot 59,
+the new church narrative is already in RAM and on screen, but those fields are
+still set. Snapshot 60 has flag zero with a nonzero handle. Previously, those
+residual fields suppressed the new narrative.
+
+The cache now disregards inherited popup signals after a context change until
+both fields consistently report closed. It still invalidates the old parent and
+blocks unchanged old text; a changed, valid narrative in the new context can be
+captured. Events identify these signals as `popup_scope: previous_context`.
+Starting the reader during an open popup remains conservative and does not
+invent a parent. A fresh closed state re-arms ordinary popup detection.
+
+Replay of both recordings retains all four recipe open/close pairs and the two
+saints cancellations, while capturing the church narrative at 104.9 seconds.
+The third saints selection no longer produces a spurious popup opening under
+the new owner. The updated suite has 57 passing tests, including audio tests.
+No claim is made here that the saint-learning action's gameplay result, selected
+row, or all intermediate messages have been decoded.

@@ -195,7 +195,8 @@ class PopupLifecycleTests(unittest.TestCase):
         self.observe(cache, popup_segment(self.auxiliary))
         self.observe(cache, popup_segment(self.auxiliary, state=2))
         closed = self.observe(cache, segment(self.auxiliary, state=2))
-        self.assertEqual(closed['cache_status'], 'empty')
+        self.assertTrue(closed is None or closed['kind'] != 'popup_closed')
+        self.assertIsNone(cache.dialog)
 
     def test_new_narrative_on_close_is_used_instead_of_old_parent(self):
         cache = DialogCache()
@@ -204,3 +205,25 @@ class PopupLifecycleTests(unittest.TestCase):
         event = self.observe(cache, segment(b'A merchant greets the party outside.\0'))
         self.assertEqual(event['kind'], 'dialog_buffer_changed')
         self.assertEqual(event['dialog']['narrative'], 'A merchant greets the party outside.')
+
+
+class PopupOwnerChangeTests(unittest.TestCase):
+    def stable(self, cache, data):
+        cache.observe(data, 0x20000)
+        return cache.observe(data, 0x20000)
+
+    def test_stale_popup_signals_cannot_hide_new_owner_narrative(self):
+        cache = DialogCache()
+        self.stable(cache, segment(b'A traveler arrives at the village.\0'))
+        self.stable(cache, popup_segment(b'\x81Traveler\xff\n\x15Recipe\0'))
+        self.stable(cache, popup_segment(b'No risk.\0'))
+        self.stable(cache, popup_segment(b'No risk.\0', state=2))
+        new_text = b'A merchant greets the party outside.\0'
+        event = self.stable(cache, popup_segment(new_text, state=2))
+        self.assertEqual(event['kind'], 'dialog_buffer_changed')
+        self.assertEqual(event['popup_scope'], 'previous_context')
+        self.assertEqual(cache.dialog['narrative'], 'A merchant greets the party outside.')
+        # A consistent closed sample re-arms detection for the new owner.
+        self.stable(cache, segment(new_text, state=2))
+        event = self.stable(cache, popup_segment(b'\x81New popup\xff\n\x15Choice\0', state=2))
+        self.assertEqual(event['kind'], 'popup_opened')

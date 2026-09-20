@@ -55,6 +55,8 @@ class DialogCache:
         self.popup = None
         self.popup_hashes = set()
         self.processed_key = None
+        self.popup_quarantined = False
+        self.closed_signal_samples = 0
 
     def observe(self, segment, base):
         raw = segment[BUFFER_OFFSET:BUFFER_OFFSET + BUFFER_SIZE]
@@ -65,8 +67,16 @@ class DialogCache:
             previous_hash = self.pending[0] if self.pending else None
             self.reset()
             self.blocked_hash = previous_hash
+            # The previous owner may leave its popup flags/handle set during
+            # redispatch. They cannot establish a popup in the new context.
+            self.popup_quarantined = popup_state(segment) != 'closed'
         self.context = ctx
-        window = popup_state(segment)
+        signal_state = popup_state(segment)
+        if self.popup_quarantined:
+            self.closed_signal_samples = self.closed_signal_samples + 1 if signal_state == 'closed' else 0
+            if self.closed_signal_samples >= 2:
+                self.popup_quarantined = False
+        window = 'unscoped' if self.popup_quarantined else signal_state
         key = (buffer_hash, ctx, window)
         if key != self.pending:
             self.pending = key
@@ -138,7 +148,9 @@ class DialogCache:
         if self.last_event and key[0] == self.last_event[1]:
             return None
         self.last_event = identity
-        event.update(buffer_sha256=key[0], context=ctx[1], data_segment=base)
+        event.update(buffer_sha256=key[0], context=ctx[1], data_segment=base,
+                     popup_signal_state=signal_state,
+                     popup_scope='previous_context' if self.popup_quarantined else 'current_context')
         return event
 
 
