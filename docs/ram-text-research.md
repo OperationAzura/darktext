@@ -62,8 +62,10 @@ After installing this branch, the equivalent entry point is `darktext-ram`.
 `narrative`, `candidate_options`, `visibility: "unverified"`, and `selection: null`.
 Watch mode now emits structured lifecycle events, including `dialog_buffer_changed`,
 `auxiliary_buffer`, `dialog_buffer_restored`, `context_changed`, and `unavailable`.
-Retained parent text is labelled unverified; it is never silently promoted to
-current screen text. See the [gameplay recording guide](recording-ram-sessions.md)
+The observed recipe-popup mechanism now emits `popup_opened` and `popup_closed`;
+closure restores a previously captured parent even if its text is absent from RAM.
+See [recipe-popup findings](recipe-popup-findings.md) for scope and evidence.
+Other retained text remains unverified. See the [gameplay recording guide](recording-ram-sessions.md)
 for the cache, strengthened recovery, and diagnostic launcher.
 
 For a deliberate one-time narrative reading, configure the existing Piper/voice

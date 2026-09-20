@@ -89,19 +89,25 @@ source repository. A path to the local folder is enough for the next analysis.
 ## Current cache behavior
 
 A stable decodable narrative updates a separate parent cache containing its
-narrative and candidate options. A stream shaped like the observed potion
-scratch buffer produces `auxiliary_buffer`, with the parent in `cached_dialog`.
-Other undecodable streams produce `unsupported_buffer` and retain the cache only
-as unverified historical context. Neither event establishes a visible popup.
-Returning to the cached narrative produces `dialog_buffer_restored` once.
+narrative and candidate options. The verified executable's MSG alternate-window
+flag (`DS:EE41`) and saved-background handle (`DS:A776`) now identify the observed
+recipe-popup lifecycle. `popup_opened` retains the parent and
+`popup_buffer_changed` tracks auxiliary changes. `popup_closed` exposes the
+captured parent with `cache_status: parent_restored`, even when the buffer still
+contains popup text. Disagreeing signals produce `popup_transition_uncertain`.
+See [the recording analysis](recipe-popup-findings.md) for evidence and scope.
+
+Other undecodable streams remain `auxiliary_buffer` or `unsupported_buffer`;
+their retained parent is unverified historical context. Those events alone do
+not establish a visible popup. Returning to the cached narrative in the buffer
+produces `dialog_buffer_restored` once.
 
 The investigated fields `DS:08D6` and `DS:A88D..A892` act as conservative
 invalidation signals. They are **not certified dialog/card identifiers**.
 Changing them clears the parent, and unchanged old buffer bytes cannot refill it
 until the buffer changes. Address relocation and connection loss also clear it.
 
-There is still no verified popup-close signal when the game restores only pixels.
-We deliberately keep that case unverified instead of announcing stale dialog as
-current. The saved RAM/frame pairs and annotations are intended to find the
-publication/hover/closure fields needed for the next step. Startup with an
-already-stale buffer and hidden-option filtering remain unresolved.
+Recipe-popup closure is now supported for a parent captured earlier in the same
+uninterrupted context. Other popup families, startup with an already-stale
+buffer, and hidden-option filtering remain unresolved. Recordings still help us
+extend coverage; automatic speech remains disabled.

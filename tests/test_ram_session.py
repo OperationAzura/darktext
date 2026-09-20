@@ -137,3 +137,70 @@ class TransitionRegressionTests(unittest.TestCase):
         fresh = segment(b'A merchant greets the party outside.\0', state=2)
         self.assertEqual(cache.observe(fresh, 0x20000)['kind'], 'context_changed')
         self.assertEqual(cache.observe(fresh, 0x20000)['kind'], 'dialog_buffer_changed')
+
+
+def popup_segment(text, state=1, flag=1, handle=0x1234):
+    data = bytearray(segment(text, state))
+    data[0xEE41] = flag
+    data[0xA776:0xA778] = handle.to_bytes(2, 'little')
+    return bytes(data)
+
+
+class PopupLifecycleTests(unittest.TestCase):
+    parent = b'A traveler arrives at the village.\x15Enter the gate.\0'
+    auxiliary = b'\x81Traveler\xff\n\x15 \x80A recipe\0'
+
+    def observe(self, cache, data):
+        cache.observe(data, 0x20000)
+        return cache.observe(data, 0x20000)
+
+    def test_flag_closure_restores_parent_with_unchanged_auxiliary_bytes(self):
+        cache = DialogCache()
+        parent = self.observe(cache, segment(self.parent))['dialog']
+        for _ in range(3):
+            opened = self.observe(cache, popup_segment(self.auxiliary))
+            self.assertEqual(opened['kind'], 'popup_opened')
+            self.assertEqual(opened['cached_dialog'], parent)
+            closed = self.observe(cache, segment(self.auxiliary))
+            self.assertEqual(closed['kind'], 'popup_closed')
+            self.assertEqual(closed['cache_status'], 'parent_restored')
+            self.assertEqual(closed['cached_dialog'], parent)
+            self.assertIsNone(cache.observe(segment(self.auxiliary), 0x20000))
+
+    def test_late_start_never_invents_parent(self):
+        cache = DialogCache()
+        self.observe(cache, popup_segment(self.auxiliary))
+        closed = self.observe(cache, segment(self.auxiliary))
+        self.assertIsNone(closed['cached_dialog'])
+        self.assertEqual(closed['cache_status'], 'empty')
+
+    def test_decodable_popup_cannot_replace_parent(self):
+        cache = DialogCache()
+        self.observe(cache, segment(self.parent))
+        self.observe(cache, popup_segment(b'A long popup message with valid ordinary text.\0'))
+        self.assertEqual(cache.dialog['narrative'], 'A traveler arrives at the village.')
+
+    def test_inconsistent_flag_handle_does_not_restore_parent(self):
+        cache = DialogCache()
+        self.observe(cache, segment(self.parent))
+        self.observe(cache, popup_segment(self.auxiliary))
+        event = self.observe(cache, popup_segment(self.auxiliary, flag=0))
+        self.assertEqual(event['kind'], 'popup_transition_uncertain')
+        event = self.observe(cache, segment(self.auxiliary))
+        self.assertEqual(event['kind'], 'popup_closed')
+
+    def test_owner_change_while_open_cannot_restore_old_dialog(self):
+        cache = DialogCache()
+        self.observe(cache, segment(self.parent))
+        self.observe(cache, popup_segment(self.auxiliary))
+        self.observe(cache, popup_segment(self.auxiliary, state=2))
+        closed = self.observe(cache, segment(self.auxiliary, state=2))
+        self.assertEqual(closed['cache_status'], 'empty')
+
+    def test_new_narrative_on_close_is_used_instead_of_old_parent(self):
+        cache = DialogCache()
+        self.observe(cache, segment(self.parent))
+        self.observe(cache, popup_segment(self.auxiliary))
+        event = self.observe(cache, segment(b'A merchant greets the party outside.\0'))
+        self.assertEqual(event['kind'], 'dialog_buffer_changed')
+        self.assertEqual(event['dialog']['narrative'], 'A merchant greets the party outside.')

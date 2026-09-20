@@ -24,6 +24,21 @@ def context(segment):
             for offset, size in [(0x8D6, 2), (0xA88D, 6)]}
 
 
+def popup_state(segment):
+    """Observed MSG alternate-window flag and saved-background handle.
+
+    Both must agree; mismatches can be snapshots taken during construction.
+    Offsets are only used with RamReader's verified executable profile.
+    """
+    flag = segment[0xEE41]
+    handle = int.from_bytes(segment[0xA776:0xA778], 'little')
+    if flag == 1 and handle:
+        return 'open'
+    if flag == 0 and handle == 0:
+        return 'closed'
+    return 'uncertain'
+
+
 class DialogCache:
     """Keep narrative/options out of the shared popup scratch-buffer lifecycle."""
     def __init__(self):
@@ -37,6 +52,9 @@ class DialogCache:
         self.last_event = None
         self.captured_at = None
         self.blocked_hash = None
+        self.popup = None
+        self.popup_hashes = set()
+        self.processed_key = None
 
     def observe(self, segment, base):
         raw = segment[BUFFER_OFFSET:BUFFER_OFFSET + BUFFER_SIZE]
@@ -48,13 +66,41 @@ class DialogCache:
             self.reset()
             self.blocked_hash = previous_hash
         self.context = ctx
-        key = (buffer_hash, ctx)
+        window = popup_state(segment)
+        key = (buffer_hash, ctx, window)
         if key != self.pending:
             self.pending = key
             if invalidated:
                 return {'kind': 'context_changed', 'cached_dialog': None,
                         'visibility': 'unverified', 'context': ctx[1]}
             return None
+        if self.processed_key == key:
+            return None
+        self.processed_key = key
+
+        def popup_event(kind, status):
+            return {'kind': kind, 'popup_state': window,
+                    'cached_dialog': self.dialog, 'cached_at': self.captured_at,
+                    'cache_status': status if self.dialog else 'empty',
+                    'visibility': 'unverified', 'buffer_sha256': buffer_hash,
+                    'context': ctx[1], 'data_segment': base}
+
+        if window == 'uncertain':
+            return popup_event('popup_transition_uncertain', 'retained_unverified')
+        if window == 'open':
+            kind = 'popup_opened' if self.popup != 'open' else 'popup_buffer_changed'
+            if self.popup != 'open':
+                self.popup_hashes.clear()
+            self.popup = 'open'
+            self.popup_hashes.add(buffer_hash)
+            return popup_event(kind, 'parent_retained')
+        was_open = self.popup == 'open'
+        self.popup = 'closed'
+        if was_open and (buffer_hash in self.popup_hashes or buffer_hash == self.dialog_hash):
+            # Closing restores pixels; the auxiliary text may remain in RAM.
+            # Return only a parent actually captured in this uninterrupted context.
+            self.blocked_hash = buffer_hash if buffer_hash != self.dialog_hash else None
+            return popup_event('popup_closed', 'parent_restored')
         if self.blocked_hash == buffer_hash:
             # A new owner can inherit the old scratch bytes. Do not immediately
             # repopulate the cache we just invalidated from those same bytes.
@@ -110,7 +156,7 @@ class Recorder:
         self.last_sample = None
         self.started = time.monotonic()
         self.log = (directory / 'events.jsonl').open('x', encoding='utf-8')
-        self.write({'kind': 'session_start', 'schema': 1, 'exe_sha256': EXE_SHA256,
+        self.write({'kind': 'session_start', 'schema': 2, 'exe_sha256': EXE_SHA256,
                     'api': api, 'budget_bytes': self.limit,
                     'note': 'Snapshots contain game data. Frames and RAM are not atomic together.'})
 
@@ -146,10 +192,13 @@ class Recorder:
         if self.full:
             return
         raw = segment[BUFFER_OFFSET:BUFFER_OFFSET + BUFFER_SIZE]
-        sample_key = (base, digest(raw), context(segment))
+        sample_key = (base, digest(raw), context(segment), popup_state(segment))
         if sample_key != self.last_sample:
             self.write({'kind': 'raw_buffer_change', 'data_segment': base,
-                        'buffer_hex': raw.hex(), 'context': sample_key[2]})
+                        'buffer_hex': raw.hex(), 'context': sample_key[2],
+                        'popup_state': sample_key[3],
+                        'popup_fields_hex': {'ee41': segment[0xEE41:0xEE42].hex(),
+                                             'a776': segment[0xA776:0xA778].hex()}})
             self.last_sample = sample_key
         if event:
             self.write(event)
