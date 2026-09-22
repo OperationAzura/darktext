@@ -19,6 +19,8 @@ shared buffer can contain stale text and hidden choices. See
 For gameplay diagnostics, run `./scripts/record-ram-session.sh`. It starts the
 game and recorder without OCR. See the [recording guide](docs/recording-ram-sessions.md)
 for popup tests, notes, recovery behavior, and where the data is saved.
+Use `DARKTEXT_RAM_SPEAK_SELECTION=1 ./scripts/record-ram-session.sh` for
+[experimental alchemist hover speech](docs/ram-hover-findings.md).
 
 ## Features
 

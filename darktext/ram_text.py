@@ -52,7 +52,7 @@ def decode_buffer(data: bytes) -> BufferText:
     narrative = clean(pieces[0])
     if len(narrative) < 20 or not any(c.isalpha() for c in narrative):
         raise ValueError('No supported narrative in shared buffer (possibly a popup)')
-    return BufferText(narrative, [clean(p) for p in pieces[1:] if clean(p)])
+    return BufferText(narrative, [clean(p) for p in pieces[1:]])
 
 
 def memory(api: str, address: int, size: int) -> bytes:
@@ -124,6 +124,7 @@ def main() -> int:
     parser.add_argument('--api', default='http://127.0.0.1:8086')
     parser.add_argument('--watch', action='store_true', help='print changed stable buffers as JSON lines')
     parser.add_argument('--speak', action='store_true', help='read narrative once; options are never spoken')
+    parser.add_argument('--speak-selection', action='store_true', help='experimental hover speech on supported alchemist screens; requires watch/record')
     parser.add_argument('--record', type=Path, help='create a new diagnostic session directory; implies --watch')
     parser.add_argument('--max-log-mb', type=int, default=256, help='recording size budget (default 256 MiB)')
     args = parser.parse_args()
@@ -131,8 +132,10 @@ def main() -> int:
         parser.error('--max-log-mb must be positive')
     if args.record:
         args.watch = True
+    if args.speak_selection and not args.watch:
+        parser.error('--speak-selection requires --watch or --record')
     if args.watch and args.speak:
-        parser.error('automatic speech is disabled until active-screen identity is verified; use --speak once')
+        parser.error('--speak is narrative-once only; use --speak-selection for supported hover speech')
     try:
         reader = RamReader(args.exe, args.api)
         if not args.watch:
@@ -153,7 +156,7 @@ def main() -> int:
                     speaker.stop()
             return 0
         from .ram_session import watch
-        return watch(reader, args.record, args.max_log_mb)
+        return watch(reader, args.record, args.max_log_mb, args.speak_selection)
     except KeyboardInterrupt:
         return 0
     except READ_ERRORS as exc:

@@ -69,7 +69,8 @@ Other retained text remains unverified. See the [gameplay recording guide](recor
 for the cache, strengthened recovery, and diagnostic launcher.
 
 For a deliberate one-time narrative reading, configure the existing Piper/voice
-environment variables and add `--speak`. Options are never spoken. `--watch --speak`
+environment variables and add `--speak`. The one-shot command does not speak options. Opt-in `--watch --speak-selection`
+now supports [alchemist hover speech](ram-hover-findings.md). `--watch --speak`
 is intentionally rejected until active-screen identity is understood.
 
 ## What testing established, and what remains

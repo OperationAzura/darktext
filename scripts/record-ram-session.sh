@@ -6,6 +6,12 @@ INSTALL=${DARKLANDS_INSTALL_ROOT:-"$ROOT/../darklands-accessibility/local"}
 DOSBOX=${DARKLANDS_DOSBOX_BIN:-"$INSTALL/bin/dosbox-staging"}
 GAME=${DARKLANDS_GAME_EXE:-"$HOME/dosGames/darklands/darkland.exe"}
 PYTHON=${DARKTEXT_PYTHON:-python3}
+READER_ARGS=()
+if [[ "${DARKTEXT_RAM_SPEAK_SELECTION:-0}" == 1 ]]; then
+    READER_ARGS+=(--speak-selection)
+    export DARKTEXT_PIPER_BIN="${DARKTEXT_PIPER_BIN:-$INSTALL/bin/piper}"
+    export DARKTEXT_VOICE_DIR="${DARKTEXT_VOICE_DIR:-$INSTALL/voices}"
+fi
 SESSION=${1:-"$ROOT/../ram-recordings/$(date +%Y%m%d-%H%M%S)"}
 if [[ ! -x "$DOSBOX" || ! -f "$GAME" ]]; then
     echo 'Set DARKLANDS_DOSBOX_BIN and DARKLANDS_GAME_EXE to the installed emulator and game.' >&2
@@ -43,7 +49,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 # Recorder creates the session exclusively before DOSBox is launched.
-"$PYTHON" -m darktext.ram_text --exe "$GAME" --record "$SESSION" &
+"$PYTHON" -m darktext.ram_text --exe "$GAME" --record "$SESSION" "${READER_ARGS[@]}" &
 reader_pid=$!
 for ((attempt=0; attempt<50; attempt++)); do
     [[ -f "$SESSION/events.jsonl" ]] && break
@@ -52,7 +58,12 @@ for ((attempt=0; attempt<50; attempt++)); do
 done
 [[ -f "$SESSION/events.jsonl" ]] || { echo 'Recorder did not start.' >&2; exit 1; }
 echo "Recording to: $SESSION"
-echo 'Play normally. Close DOSBox or press Ctrl+C here to finish. OCR and automatic speech are off.'
+echo 'Play normally. Close DOSBox or press Ctrl+C here to finish. OCR is off.'
+if [[ ${#READER_ARGS[@]} -gt 0 ]]; then
+    echo 'Experimental selection speech is enabled for the alchemist menu and formula popup.'
+else
+    echo 'Selection speech is off. Set DARKTEXT_RAM_SPEAK_SELECTION=1 to test it.'
+fi
 "$DOSBOX" --set core=normal --set webserver_enabled=on \
     --set webserver_bind_address=127.0.0.1 --set webserver_port=8086 \
     "$GAME" > "$SESSION/dosbox.log" 2>&1 &

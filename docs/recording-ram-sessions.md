@@ -52,7 +52,8 @@ expensive rediscovery loop.
 
 Play naturally as well; no special game save or prolonged session is required.
 Do not rely on these candidate options as an authoritative list of available
-choices yet. This recording mode is diagnostic and does not speak.
+choices yet. The default recording mode is silent. Set `DARKTEXT_RAM_SPEAK_SELECTION=1`
+with the launcher for [tested alchemist hover speech](ram-hover-findings.md).
 
 Optional notes from another terminal, with the actual session directory:
 
@@ -112,4 +113,5 @@ earlier in the same uninterrupted context. Popup signals inherited across a
 context change are ignored until a consistent closed state re-arms detection;
 they cannot suppress a new narrative. Other popup families, startup with an already-stale
 buffer, and hidden-option filtering remain unresolved. Recordings still help us
-extend coverage; automatic speech remains disabled.
+extend coverage. Narrative auto-reading remains disabled; opt-in selection speech
+is available on the tested alchemist screens.

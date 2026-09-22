@@ -46,6 +46,7 @@ class DialogCache:
 
     def reset(self):
         self.dialog = None
+        self.parent_usable = False
         self.dialog_hash = None
         self.context = None
         self.pending = None
@@ -110,6 +111,7 @@ class DialogCache:
             # Closing restores pixels; the auxiliary text may remain in RAM.
             # Return only a parent actually captured in this uninterrupted context.
             self.blocked_hash = buffer_hash if buffer_hash != self.dialog_hash else None
+            self.parent_usable = self.dialog is not None
             return popup_event('popup_closed', 'parent_restored')
         if self.blocked_hash == buffer_hash:
             # A new owner can inherit the old scratch bytes. Do not immediately
@@ -119,6 +121,7 @@ class DialogCache:
         try:
             parsed = decode_buffer(raw)
         except ValueError as exc:
+            self.parent_usable = False
             # Recognize only the observed scratch-stream shape. This does not
             # establish popup visibility, row availability, or popup closure.
             text = raw.split(b'\0', 1)[0]
@@ -131,6 +134,7 @@ class DialogCache:
                      'cache_status': 'retained_unverified' if self.dialog else 'empty',
                      'visibility': 'unverified'}
         else:
+            self.parent_usable = True
             value = asdict(parsed)
             if value != self.dialog:
                 self.dialog = value
@@ -168,7 +172,7 @@ class Recorder:
         self.last_sample = None
         self.started = time.monotonic()
         self.log = (directory / 'events.jsonl').open('x', encoding='utf-8')
-        self.write({'kind': 'session_start', 'schema': 2, 'exe_sha256': EXE_SHA256,
+        self.write({'kind': 'session_start', 'schema': 3, 'exe_sha256': EXE_SHA256,
                     'api': api, 'budget_bytes': self.limit,
                     'note': 'Snapshots contain game data. Frames and RAM are not atomic together.'})
 
@@ -200,15 +204,17 @@ class Recorder:
         self.used += len(data)
         return name
 
-    def sample(self, segment, base, event):
+    def sample(self, segment, base, event, snapshot_trigger=False):
         if self.full:
             return
         raw = segment[BUFFER_OFFSET:BUFFER_OFFSET + BUFFER_SIZE]
-        sample_key = (base, digest(raw), context(segment), popup_state(segment))
+        hover_fields = {'table': segment[0xE96E:0xE9C4].hex(),
+                        'input_mode': segment[0xEE42]}
+        sample_key = (base, digest(raw), context(segment), popup_state(segment), hover_fields)
         if sample_key != self.last_sample:
             self.write({'kind': 'raw_buffer_change', 'data_segment': base,
                         'buffer_hex': raw.hex(), 'context': sample_key[2],
-                        'popup_state': sample_key[3],
+                        'popup_state': sample_key[3], 'hover_fields': hover_fields,
                         'popup_fields_hex': {'ee41': segment[0xEE41:0xEE42].hex(),
                                              'a776': segment[0xA776:0xA778].hex()}})
             self.last_sample = sample_key
@@ -217,7 +223,7 @@ class Recorder:
         now = time.monotonic()
         # Periodic snapshots catch popup closure even when the text is unchanged.
         # Transition snapshots are rate-limited so rapid hover cannot flood disk.
-        if now - self.last_snapshot < (0.5 if event else 2.0):
+        if now - self.last_snapshot < (0.5 if event or snapshot_trigger else 2.0):
             return
         self.last_snapshot = now
         self.sequence += 1
@@ -241,7 +247,15 @@ class Recorder:
         self.log.close()
 
 
-def watch(reader, directory=None, max_mb=256):
+def watch(reader, directory=None, max_mb=256, speak_selection=False):
+    from .ram_selection import SelectionTracker
+    tracker = SelectionTracker()
+    speaker = None
+    if speak_selection:
+        from .speaker import DirectLiveSpeaker, get_voice_for_narrative
+        if get_voice_for_narrative() is None:
+            raise ValueError('No Piper voice is configured for selection speech')
+        speaker = DirectLiveSpeaker()
     cache = DialogCache()
     recorder = Recorder(directory, reader.api, max_mb) if directory else None
     last_error = None
@@ -255,6 +269,9 @@ def watch(reader, directory=None, max_mb=256):
                 segment = reader.read_segment()
             except READ_ERRORS as exc:
                 cache.reset()
+                tracker.reset()
+                if speaker:
+                    speaker.stop()
                 if str(exc) != last_error:
                     event = {'kind': 'unavailable', 'reason': str(exc), 'cached_dialog': None}
                     print(json.dumps(event), flush=True)
@@ -272,10 +289,22 @@ def watch(reader, directory=None, max_mb=256):
             event = cache.observe(segment, reader.base)
             if event:
                 print(json.dumps(event), flush=True)
+            selection_event = tracker.observe(segment, cache, reader.base)
+            if selection_event:
+                print(json.dumps(selection_event), flush=True)
+                if recorder:
+                    recorder.write(selection_event)
+                if speaker:
+                    speaker.stop()
+                    selection = selection_event['selection']
+                    if selection and not speaker.speak(selection['speech_text']):
+                        raise ValueError('Selection speech could not be started')
             if recorder:
-                recorder.sample(segment, reader.base, event)
+                recorder.sample(segment, reader.base, event, snapshot_trigger=bool(selection_event))
             time.sleep(.15)
     finally:
         signal.signal(signal.SIGTERM, old_handler)
+        if speaker:
+            speaker.stop()
         if recorder:
             recorder.close()
