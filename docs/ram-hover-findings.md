@@ -1,9 +1,10 @@
-# Alchemist hover tracking and speech
+# RAM hover tracking and speech
 
 The `20260920-154504` recording contains 149 snapshot pairs. It captures the
 alchemist's main menu in both directions, then the four-character formula list.
 The RAM reader now emits `selection_changed` and `selection_cleared` events and
-supports opt-in speech for these two screens, without OCR.
+supports opt-in speech for these screens, without OCR. The recorded learning-saints
+popup is now supported as well (see the follow-up below).
 
 ## Run with hover speech
 
@@ -19,9 +20,9 @@ silent. To attach to an already-running game with speech configured:
 python3 -m darktext.ram_text --exe /path/to/darkland.exe --watch --speak-selection
 ```
 
-Coverage is deliberately limited to the tested executable and the alchemist
-menu (owner `0x1A`) and formula-purchase dialog (owner `0x59`). Other menus remain
-silent. Formula speech includes the character's name, so identical formulas
+Coverage is deliberately limited to the tested executable, the alchemist
+menu (owner `0x1A`), formula-purchase dialog (owner `0x59`), and learning-saints
+popup (owner `0x36`, alternate input mode only). Other menus remain silent. Formula speech includes the character's name, so identical formulas
 under different characters do not sound like the same selection. Character
 headings, blank areas, invalid rows, and unsupported buffers do not speak.
 
@@ -78,5 +79,28 @@ Recordings use schema 3 and include the active row table and input mode whenever
 those fields change, as well as decoded selection events. Existing narrative
 records still label whole option lists as candidate/unverified; the separate
 selection events carry the tested hover mapping. This does not certify other
-owners, saint selectors, inventory screens, or disabled-row semantics beyond
+owners, other saint selectors, inventory screens, or disabled-row semantics beyond
 rejecting status values other than `1`.
+
+
+## Learning-saints hover follow-up
+
+Replay of `20260920-140443` provides two clear selected alternate rows:
+
+| Snapshot | Published/raw row | Character slot | Item slot | Resolved speech |
+|---|---|---|---|---|
+| 52 | 5 | 1 | 1 | Udalrich: Saint Charity |
+| 55 | 10 | 2 | 2 | Judith: Saint Engelbert |
+
+Both match the visible highlights. The character-heading/four-item control
+format is shared with the formula list. The decoder preserves the raw saint
+label and expands only its `S.` prefix to `Saint` for speech; it does not guess
+expansions of shortened names. Events use `source: saint_popup` and `saint_slot`,
+with the same character slot/name fields as formula selections.
+
+Primary library options remain unsupported for speech. Character headings with
+no selected row, unknown control formats, and time-passage scratch text produce
+no selection. This validates the two observed saint rows and the shared mapping,
+not every possible saint or party configuration. Synthetic tests cover the
+character/item mapping and rejection cases. All 69 tests pass; the earlier
+alchemist replay retains its 22 distinct supported selections.

@@ -124,7 +124,7 @@ def main() -> int:
     parser.add_argument('--api', default='http://127.0.0.1:8086')
     parser.add_argument('--watch', action='store_true', help='print changed stable buffers as JSON lines')
     parser.add_argument('--speak', action='store_true', help='read narrative once; options are never spoken')
-    parser.add_argument('--speak-selection', action='store_true', help='experimental hover speech on supported alchemist screens; requires watch/record')
+    parser.add_argument('--speak-selection', action='store_true', help='experimental hover speech on supported alchemist/learning-saints screens; requires watch/record')
     parser.add_argument('--record', type=Path, help='create a new diagnostic session directory; implies --watch')
     parser.add_argument('--max-log-mb', type=int, default=256, help='recording size budget (default 256 MiB)')
     args = parser.parse_args()

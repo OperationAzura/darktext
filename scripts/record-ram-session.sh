@@ -60,7 +60,7 @@ done
 echo "Recording to: $SESSION"
 echo 'Play normally. Close DOSBox or press Ctrl+C here to finish. OCR is off.'
 if [[ ${#READER_ARGS[@]} -gt 0 ]]; then
-    echo 'Experimental selection speech is enabled for the alchemist menu and formula popup.'
+    echo 'Experimental selection speech is enabled for the alchemist menu, formula popup, and learning-saints popup.'
 else
     echo 'Selection speech is off. Set DARKTEXT_RAM_SPEAK_SELECTION=1 to test it.'
 fi

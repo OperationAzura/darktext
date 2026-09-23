@@ -107,3 +107,24 @@ class SelectionTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):watch(reader,speak_selection=True)
         speaker.speak.assert_called_once_with('First choice')
         self.assertGreaterEqual(speaker.stop.call_count,2)
+
+
+class SaintsSelectionTests(unittest.TestCase):
+    def test_learning_saints_mapping_preserves_character_and_saint_slot(self):
+        raw = POPUP.replace(b'Formula ', b'S.Example ')
+        d = segment(raw, owner=0x36, row=5, popup=True)
+        result = selected_option(d, cache_for(d), BASE)
+        self.assertEqual(result['source'], 'saint_popup')
+        self.assertEqual(result['character_slot'], 1)
+        self.assertEqual(result['saint_slot'], 1)
+        self.assertEqual(result['text'], 'S.Example 1')
+        self.assertEqual(result['speech_text'], 'Blair: Saint Example 1')
+        self.assertNotIn('formula_slot', result)
+
+    def test_learning_saints_primary_menu_remains_unsupported(self):
+        d = segment(owner=0x36)
+        self.assertIsNone(selected_option(d, cache_for(d), BASE))
+
+    def test_time_passage_buffer_cannot_be_read_as_a_saint(self):
+        d = segment(b'No risk.\0', owner=0x36, row=5, popup=True)
+        self.assertIsNone(selected_option(d, cache_for(d), BASE))
